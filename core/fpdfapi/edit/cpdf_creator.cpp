@@ -179,17 +179,33 @@ bool CPDF_Creator::WriteOldObjs() {
     return true;
   }
 
-  const std::set<uint32_t> objects_with_refs =
-      GetObjectsWithReferences(document_);
+  if (!has_init_refs_) {
+    objects_with_refs_ = GetObjectsWithReferences(document_);
+    has_init_refs_ = true;
+  }
+
   uint32_t last_object_number_written = 0;
-  for (uint32_t objnum = cur_obj_num_; objnum <= nLastObjNum; ++objnum) {
-    if (!pdfium::Contains(objects_with_refs, objnum)) {
+
+  // Yield after ~16KB to ensure main thread responsiveness and true partial processing
+  const FX_FILESIZE kYieldBytes = 16384;
+  const FX_FILESIZE start_offset = archive_->CurrentOffset();
+
+  while (cur_obj_num_ <= nLastObjNum) {
+    uint32_t objnum = cur_obj_num_;
+    if (!pdfium::Contains(objects_with_refs_, objnum)) {
+      cur_obj_num_++;  // Skip unused
       continue;
     }
     if (!WriteOldIndirectObject(objnum)) {
       return false;
     }
     last_object_number_written = objnum;
+    cur_obj_num_++;  // Advance
+
+    // Check yield condition
+    if (archive_->CurrentOffset() - start_offset > kYieldBytes) {
+      return true;  // Yield partial success
+    }
   }
   // If there are no new objects to write, then adjust `last_obj_num_` if
   // needed to reflect the actual last object number.
@@ -200,16 +216,25 @@ bool CPDF_Creator::WriteOldObjs() {
 }
 
 bool CPDF_Creator::WriteNewObjs() {
-  for (size_t i = cur_obj_num_; i < new_obj_num_array_.size(); ++i) {
-    uint32_t objnum = new_obj_num_array_[i];
+  const FX_FILESIZE kYieldBytes = 16384;
+  const FX_FILESIZE start_offset = archive_->CurrentOffset();
+
+  while (cur_obj_num_ < new_obj_num_array_.size()) {
+    uint32_t objnum = new_obj_num_array_[cur_obj_num_];
     RetainPtr<const CPDF_Object> pObj = document_->GetIndirectObject(objnum);
     if (!pObj) {
+      cur_obj_num_++;
       continue;
     }
 
     object_offsets_[objnum] = archive_->CurrentOffset();
     if (!WriteIndirectObj(pObj->GetObjNum(), pObj.Get())) {
       return false;
+    }
+    cur_obj_num_++;
+
+    if (archive_->CurrentOffset() - start_offset > kYieldBytes) {
+      return true;
     }
   }
   return true;
@@ -300,6 +325,11 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage2() {
       return Stage::kInvalid;
     }
 
+    // If not finished, stay in this stage
+    if (parser_ && cur_obj_num_ <= parser_->GetLastObjNum()) {
+      return stage_;
+    }
+
     stage_ = Stage::kInitWriteNewObjs25;
   }
   if (stage_ == Stage::kInitWriteNewObjs25) {
@@ -309,6 +339,10 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage2() {
   if (stage_ == Stage::kWriteNewObjs26) {
     if (!WriteNewObjs()) {
       return Stage::kInvalid;
+    }
+
+    if (cur_obj_num_ < new_obj_num_array_.size()) {
+      return stage_;
     }
 
     stage_ = Stage::kWriteEncryptDict27;
@@ -592,7 +626,7 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
   return stage_;
 }
 
-bool CPDF_Creator::Create(uint32_t flags) {
+bool CPDF_Creator::Initialize(uint32_t flags) {
   is_incremental_ = !!(flags & FPDFCREATE_INCREMENTAL);
   is_original_ = !(flags & FPDFCREATE_NO_ORIGINAL);
 
@@ -600,8 +634,17 @@ bool CPDF_Creator::Create(uint32_t flags) {
   last_obj_num_ = document_->GetLastObjNum();
   object_offsets_.clear();
   new_obj_num_array_.clear();
+  objects_with_refs_.clear();
+  has_init_refs_ = false;
 
   InitID();
+  return true;
+}
+
+bool CPDF_Creator::Create(uint32_t flags) {
+  if (!Initialize(flags)) {
+    return false;
+  }
   return Continue();
 }
 
@@ -679,6 +722,45 @@ bool CPDF_Creator::Continue() {
   }
 
   return stage_ > Stage::kInvalid;
+}
+
+int CPDF_Creator::ContinueOneStep() {
+  if (stage_ < Stage::kInit0) {
+    return -1;  // Already failed
+  }
+
+  if (stage_ >= Stage::kComplete100) {
+    return 0;  // Already complete
+  }
+
+  // Execute one stage iteration
+  Stage iRet = Stage::kInit0;
+  if (stage_ < Stage::kInitWriteObjs20) {
+    iRet = WriteDoc_Stage1();
+  } else if (stage_ < Stage::kInitWriteXRefs80) {
+    iRet = WriteDoc_Stage2();
+  } else if (stage_ < Stage::kWriteTrailerAndFinish90) {
+    iRet = WriteDoc_Stage3();
+  } else {
+    iRet = WriteDoc_Stage4();
+  }
+
+  // Check for error or regression
+  if (iRet < stage_) {
+    stage_ = Stage::kInvalid;
+    return -1;  // Error occurred
+  }
+
+  // Return status based on completion state
+  if (stage_ >= Stage::kComplete100) {
+    return 0;  // Complete
+  }
+
+  return 1;  // More work remains
+}
+
+FX_FILESIZE CPDF_Creator::GetCurrentOffset() const {
+  return archive_->CurrentOffset();
 }
 
 bool CPDF_Creator::SetFileVersion(int32_t fileVersion) {

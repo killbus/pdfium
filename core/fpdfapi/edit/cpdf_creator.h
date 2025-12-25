@@ -9,6 +9,7 @@
 
 #include <map>
 #include <memory>
+#include <set>
 #include <vector>
 
 #include "core/fxcrt/fx_stream.h"
@@ -35,6 +36,20 @@ class CPDF_Creator {
   void RemoveSecurity();
   bool Create(uint32_t flags);
   bool SetFileVersion(int32_t fileVersion);
+
+  // Initializes the save state without executing the blocking Continue() loop.
+  // Returns false if initialization fails.
+  // Used by FPDF_CreateSaveSession for chunked PDF generation.
+  // After calling this, use ContinueOneStep() to execute incrementally.
+  bool Initialize(uint32_t flags);
+
+  // Executes one step of the save process for chunked saving.
+  // Returns: 1 if more work remains, 0 if complete, -1 on error.
+  // Used by FPDF_SaveNextChunk() for asynchronous PDF generation.
+  int ContinueOneStep();
+
+  // Returns the current file offset for tracking chunked save progress.
+  FX_FILESIZE GetCurrentOffset() const;
 
   // Experimental EmbedPDF Extension: Set encryption for documents that weren't
   // originally encrypted. This sets both encrypt_dict_ (for trailer writing)
@@ -96,6 +111,8 @@ class CPDF_Creator {
   bool security_changed_ = false;
   bool is_incremental_ = false;
   bool is_original_ = false;
+  bool has_init_refs_ = false;
+  std::set<uint32_t> objects_with_refs_;
 };
 
 #endif  // CORE_FPDFAPI_EDIT_CPDF_CREATOR_H_
