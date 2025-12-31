@@ -763,6 +763,48 @@ FX_FILESIZE CPDF_Creator::GetCurrentOffset() const {
   return archive_->CurrentOffset();
 }
 
+#include <algorithm>
+
+int CPDF_Creator::GetProgress() const {
+  // 1. Calculate the total estimated workload (in objects)
+  // Note: Only object writing stages (21 & 26) have fine-grained progress.
+  // Other stages use their enum value as a rough progress indicator.
+  if (stage_ != Stage::kWriteOldObjs21 && stage_ != Stage::kWriteNewObjs26) {
+    return static_cast<int>(stage_);
+  }
+
+  // Calculate totals
+  // If incremental, old objects are skipped (count as 0 work or just ignored).
+  // parser_->GetLastObjNum() represents the total old objects.
+  const uint32_t total_old_objs = (parser_ && !is_incremental_)
+                                  ? parser_->GetLastObjNum() : 0;
+  const size_t total_new_objs = new_obj_num_array_.size();
+  const size_t total_work_objs = total_old_objs + total_new_objs;
+
+  if (total_work_objs == 0) {
+    return static_cast<int>(stage_);
+  }
+
+  // Calculate currently processed objects
+  size_t current_processed = 0;
+  if (stage_ == Stage::kWriteOldObjs21) {
+    current_processed = cur_obj_num_;
+  } else if (stage_ == Stage::kWriteNewObjs26) {
+    current_processed = total_old_objs + cur_obj_num_;
+  }
+
+  // Map the object processing phase to the range between kInitWriteObjs20 and kWriteTrailerAndFinish90.
+  // This ensures progress is linearly interpolated between these two defined stages.
+  const int kStartProgress = static_cast<int>(Stage::kInitWriteObjs20);
+  const int kEndProgress = static_cast<int>(Stage::kWriteTrailerAndFinish90);
+  const int kRange = kEndProgress - kStartProgress;
+
+  double ratio = static_cast<double>(current_processed) / total_work_objs;
+  int progress = kStartProgress + static_cast<int>(ratio * kRange);
+
+  return std::clamp(progress, kStartProgress, kEndProgress);
+}
+
 bool CPDF_Creator::SetFileVersion(int32_t fileVersion) {
   if (fileVersion < 10 || fileVersion > 17) {
     return false;

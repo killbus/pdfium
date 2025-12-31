@@ -55,6 +55,7 @@ source_set("fpdfsdk") {
     "fpdf_ppo.cpp",
     "fpdf_progressive.cpp",
     "fpdf_save.cpp",
+    "fpdf_save_chunked.cpp",
     "fpdf_searchex.cpp",
     "fpdf_signature.cpp",
     "fpdf_structtree.cpp",

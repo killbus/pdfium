@@ -51,6 +51,10 @@ class CPDF_Creator {
   // Returns the current file offset for tracking chunked save progress.
   FX_FILESIZE GetCurrentOffset() const;
 
+  // Returns the current save progress as a percentage (0-100).
+  // Returns -1 if the save process has not been initialized.
+  int GetProgress() const;
+
   // Experimental EmbedPDF Extension: Set encryption for documents that weren't
   // originally encrypted. This sets both encrypt_dict_ (for trailer writing)
   // and security_handler_ (for GetCryptoHandler() used in stream/string encryption).
