@@ -11,6 +11,7 @@ source_set("fpdfsdk") {
     "epdf_webp_shim.cpp",
     "epdf_png_shim.cpp",
     "epdf_jpeg_shim.cpp",
+    "fpdf_merge_utils.cpp",
     "cpdfsdk_annot.cpp",
     "cpdfsdk_annot.h",
     "cpdfsdk_annotiteration.cpp",

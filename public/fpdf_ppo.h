@@ -108,6 +108,54 @@ FPDF_NewFormObjectFromXObject(FPDF_XOBJECT xobject);
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 FPDF_CopyViewerPreferences(FPDF_DOCUMENT dest_doc, FPDF_DOCUMENT src_doc);
 
+// Experimental API.
+// Copy bookmarks from source document to destination document.
+//
+//   dest_doc         - The destination document.
+//   src_doc          - The source document to copy bookmarks from.
+//   pagerange        - Page range string (e.g., "1,3,5-7"). First page is 1.
+//                      If NULL or empty, all pages are included.
+//   dest_start_index - The destination page index (0-based) where imported
+//                      pages start.
+//
+// Returns TRUE on success, FALSE if documents are invalid or page range is empty.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_CopyBookmarks(
+    FPDF_DOCUMENT dest_doc,
+    FPDF_DOCUMENT src_doc,
+    FPDF_BYTESTRING pagerange,
+    int dest_start_index);
+
+// Experimental API.
+// Remap page links in the destination document pages that were imported from source.
+//
+//   dest_doc         - The destination document.
+//   src_doc          - The source document.
+//   pagerange        - Page range string of the imported pages.
+//   dest_start_index - The destination page index (0-based) where imported
+//                      pages start.
+//
+// Returns TRUE on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_RemapPageLinks(
+    FPDF_DOCUMENT dest_doc,
+    FPDF_DOCUMENT src_doc,
+    FPDF_BYTESTRING pagerange,
+    int dest_start_index);
+
+
+// Update bookmark destinations after page reordering.
+//
+//   document - The document containing bookmarks to update.
+//   old_page_indices - Array of page indices before reordering.
+//   new_page_indices - Array of corresponding new page indices (0-based).
+//   count - Number of pages that were moved.
+//
+// Returns TRUE on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV 
+FPDF_UpdateBookmarkDestinations(FPDF_DOCUMENT document,
+                                const int* old_page_indices,
+                                const int* new_page_indices,
+                                int count);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

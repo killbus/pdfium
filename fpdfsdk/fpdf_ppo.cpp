@@ -6,6 +6,7 @@
 
 #include "public/fpdf_ppo.h"
 
+#include <algorithm>
 #include <memory>
 #include <numeric>
 #include <utility>
@@ -22,6 +23,7 @@
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_object.h"
+#include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
 #include "core/fxcrt/check.h"
 #include "core/fxcrt/retain_ptr.h"
@@ -253,3 +255,4 @@ FPDF_CopyViewerPreferences(FPDF_DOCUMENT dest_doc, FPDF_DOCUMENT src_doc) {
   dest_dict->SetFor("ViewerPreferences", std::move(cloned_dict));
   return true;
 }
+
