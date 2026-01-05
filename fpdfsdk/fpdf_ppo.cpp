@@ -26,10 +26,18 @@
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
 #include "core/fxcrt/check.h"
+#include "core/fxcrt/observed_ptr.h"
 #include "core/fxcrt/retain_ptr.h"
 #include "core/fxcrt/span.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "public/cpp/fpdf_scopers.h"
+
+struct fpdf_pageimport_t__ {
+  // Session owns the object map for deduplication.
+  // It effectively outlives any single source document instance.
+  std::map<uint32_t, uint32_t> object_map;
+  ObservedPtr<CPDF_Document> dest_doc;
+};
 
 namespace {
 
@@ -254,5 +262,63 @@ FPDF_CopyViewerPreferences(FPDF_DOCUMENT dest_doc, FPDF_DOCUMENT src_doc) {
 
   dest_dict->SetFor("ViewerPreferences", std::move(cloned_dict));
   return true;
+}
+
+
+FPDF_EXPORT FPDF_PAGEIMPORT FPDF_CALLCONV
+FPDF_PageImport_Begin(FPDF_DOCUMENT dest_doc, FPDF_DOCUMENT reserved) {
+  CPDF_Document* cdest_doc = CPDFDocumentFromFPDFDocument(dest_doc);
+  if (!cdest_doc) {
+    return nullptr;
+  }
+
+  auto session = std::make_unique<fpdf_pageimport_t__>();
+  session->dest_doc = ObservedPtr<CPDF_Document>(cdest_doc);
+  // src_doc is not stored in session; it is passed per-import.
+
+  return session.release();
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+FPDF_PageImport_ImportPages(FPDF_PAGEIMPORT session,
+                            FPDF_DOCUMENT src_doc,
+                            FPDF_BYTESTRING pagerange,
+                            int index) {
+  auto* s = reinterpret_cast<fpdf_pageimport_t__*>(session);
+  if (!s || !s->dest_doc) {
+    return false;
+  }
+
+  CPDF_Document* csrc_doc = CPDFDocumentFromFPDFDocument(src_doc);
+  if (!csrc_doc) {
+    return false;
+  }
+
+  std::vector<uint32_t> page_indices = GetPageIndices(*(csrc_doc), pagerange);
+  if (page_indices.empty()) {
+    return false;
+  }
+
+  // Create a transient exporter for this operation
+  CPDF_PageExporter exporter(s->dest_doc.Get(), csrc_doc);
+
+  if (!exporter.Init()) {
+    return false;
+  }
+
+  // GraftMap Injection: Swap the persistent map into the exporter
+  exporter.SwapObjectNumberMap(s->object_map);
+
+  bool result = exporter.ExportPages(page_indices, index);
+
+  // GraftMap Extraction: Swap the updated map back to the session
+  exporter.SwapObjectNumberMap(s->object_map);
+
+  return result;
+}
+
+FPDF_EXPORT void FPDF_CALLCONV
+FPDF_PageImport_End(FPDF_PAGEIMPORT session) {
+  delete reinterpret_cast<fpdf_pageimport_t__*>(session);
 }
 
