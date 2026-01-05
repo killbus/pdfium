@@ -330,7 +330,14 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_CopyBookmarks(
         page_map[static_cast<int>(src_indices[i])] = dest_start_index + static_cast<int>(i);
     }
 
-    // 2. Prepare Dest Root (Outlines)
+    // 2. Check Source Bookmarks first to avoid creating empty Outlines in Dest
+    const CPDF_Dictionary* src_root_dict = src_doc->GetRoot();
+    if (!src_root_dict) return true; // No src root, nothing to copy
+
+    RetainPtr<const CPDF_Dictionary> src_outlines = src_root_dict->GetDictFor("Outlines");
+    if (!src_outlines) return true; // src bookmarks empty -> nothing to copy
+
+    // 3. Prepare Dest Root (Outlines) - Only if we have something to copy
     RetainPtr<CPDF_Dictionary> dest_root = dest_doc->GetMutableRoot();
     if (!dest_root) return false;
 
@@ -345,13 +352,7 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_CopyBookmarks(
         dest_outlines->SetNewFor<CPDF_Number>("Count", 0);
     }
 
-    // 3. Traverse Source Bookmarks
-    const CPDF_Dictionary* src_root_dict = src_doc->GetRoot();
-    if (!src_root_dict) return true; // No src root, nothing to copy
-
-    RetainPtr<const CPDF_Dictionary> src_outlines = src_root_dict->GetDictFor("Outlines");
-    if (!src_outlines) return true; // src bookmarks
-
+    // 4. Copy Bookmarks
     CPDF_Bookmark src_root_bookmark(src_outlines);
     
     // We iterate the top-level children of src outlines

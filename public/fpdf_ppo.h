@@ -156,6 +156,48 @@ FPDF_UpdateBookmarkDestinations(FPDF_DOCUMENT document,
                                 const int* new_page_indices,
                                 int count);
 
+// Experimental API.
+// Handle to a page import session.
+typedef struct fpdf_pageimport_t__* FPDF_PAGEIMPORT;
+
+// Experimental API.
+// Create a page import session for importing pages to |dest_doc|.
+//
+// The session maintains an internal resource cache to avoid duplicating
+// shared resources (fonts, images) when the same source document is
+// imported multiple times.
+//
+//   dest_doc - Destination document.
+//   reserved - Reserved argument, must be NULL. (Formerly src_doc)
+//
+// Returns a session handle on success, or NULL on failure.
+FPDF_EXPORT FPDF_PAGEIMPORT FPDF_CALLCONV
+FPDF_PageImport_Begin(FPDF_DOCUMENT dest_doc, FPDF_DOCUMENT reserved);
+
+// Experimental API.
+// Import pages from a source document using an existing session.
+//
+//   session   - Session handle from FPDF_PageImport_Begin().
+//   src_doc   - Source document to import pages from. Must be logically the same
+//               document used in previous calls for this session (e.g. same file content).
+//   pagerange - Page range string (e.g., "1,3,5-7"). First page is 1.
+//   index     - Destination insertion index (0-based).
+//
+// Returns TRUE on success, FALSE if session is invalid or page range is bad.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+FPDF_PageImport_ImportPages(FPDF_PAGEIMPORT session,
+                            FPDF_DOCUMENT src_doc,
+                            FPDF_BYTESTRING pagerange,
+                            int index);
+
+// Experimental API.
+// Close a page import session and free associated resources.
+//
+//   session - Session handle from FPDF_PageImport_Begin().
+FPDF_EXPORT void FPDF_CALLCONV
+FPDF_PageImport_End(FPDF_PAGEIMPORT session);
+
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus

@@ -25,8 +25,6 @@ class CPDF_PageOrganizer {
   CPDF_PageOrganizer(CPDF_Document* dest_doc, CPDF_Document* src_doc);
   ~CPDF_PageOrganizer();
 
-  // Must be called after construction before doing anything else.
-  bool Init();
 
   bool UpdateReference(RetainPtr<CPDF_Object> obj);
 
@@ -49,6 +47,18 @@ class CPDF_PageOrganizer {
   static RetainPtr<const CPDF_Object> PageDictGetInheritableTag(
       RetainPtr<const CPDF_Dictionary> dict,
       ByteStringView src_tag);
+
+  public:
+  // Must be called after construction before doing anything else.
+  bool Init();
+
+  // Swap the object number map with an external map.
+  // This allows the map to be preserved across multiple exporter instances.
+  void SwapObjectNumberMap(std::map<uint32_t, uint32_t>& other) {
+    object_number_map_.swap(other);
+  }
+
+ protected:
 
  private:
   bool InitDestDoc();
