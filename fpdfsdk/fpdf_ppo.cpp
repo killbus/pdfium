@@ -22,6 +22,7 @@
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_object.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
@@ -227,6 +228,34 @@ FPDF_NewFormObjectFromXObject(FPDF_XOBJECT xobject) {
   auto form_object = std::make_unique<CPDF_FormObject>(
       CPDF_PageObject::kNoContentStream, std::move(form), CFX_Matrix());
   return FPDFPageObjectFromCPDFPageObject(form_object.release());
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_ClonePage(FPDF_DOCUMENT document,
+                                                   int src_page_index,
+                                                   int dest_page_index) {
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> pSrcDict = pDoc->GetMutablePageDictionary(src_page_index);
+  if (!pSrcDict) {
+    return false;
+  }
+
+  auto pNewDict = pDoc->NewIndirect<CPDF_Dictionary>();
+  pNewDict->SetNewFor<CPDF_Name>("Type", "Page");
+
+  CPDF_DictionaryLocker locker(pSrcDict);
+  for (const auto& it : locker) {
+    const ByteString& key = it.first;
+    if (key == "Type" || key == "Parent") {
+      continue;
+    }
+    pNewDict->SetFor(key, it.second->Clone());
+  }
+
+  return pDoc->InsertNewPage(dest_page_index, pNewDict);
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
