@@ -99,6 +99,20 @@ FPDF_EXPORT void FPDF_CALLCONV FPDF_CloseXObject(FPDF_XOBJECT xobject);
 FPDF_EXPORT FPDF_PAGEOBJECT FPDF_CALLCONV
 FPDF_NewFormObjectFromXObject(FPDF_XOBJECT xobject);
 
+// Experimental API.
+// Clone a page within the same document.
+// The new page will share the same content stream and resources as the source page.
+// This is a shallow copy, efficient for splitting or duplicating pages in-place.
+//
+//   document       - The document handle.
+//   src_page_index - The index of the source page to clone. 0-based.
+//   dest_page_index - The index where the new page should be inserted. 0-based.
+//
+// Returns TRUE on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_ClonePage(FPDF_DOCUMENT document,
+                                                   int src_page_index,
+                                                   int dest_page_index);
+
 // Copy the viewer preferences from |src_doc| into |dest_doc|.
 //
 //   dest_doc - Document to write the viewer preferences into.

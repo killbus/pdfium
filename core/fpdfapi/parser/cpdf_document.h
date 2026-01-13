@@ -158,6 +158,7 @@ class CPDF_Document : public Observable,
   void LoadPages();
   void CreateNewDoc();
   RetainPtr<CPDF_Dictionary> CreateNewPage(int iPage);
+  bool InsertNewPage(int iPage, RetainPtr<CPDF_Dictionary> pPageDict);
 
   void IncrementParsedPageCount() { ++parsed_page_count_; }
   uint32_t GetParsedPageCountForTesting() { return parsed_page_count_; }
@@ -198,7 +199,6 @@ class CPDF_Document : public Observable,
                            bool is_insert,
                            std::set<RetainPtr<CPDF_Dictionary>>* visited);
 
-  bool InsertNewPage(int iPage, RetainPtr<CPDF_Dictionary> pPageDict);
   void ResetTraversal();
   CPDF_Parser::Error HandleLoadResult(CPDF_Parser::Error error);
 
