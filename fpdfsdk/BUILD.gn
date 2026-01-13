@@ -14,6 +14,7 @@ source_set("fpdfsdk") {
     "fpdf_merge_utils.cpp",
     "cpdfsdk_annot.cpp",
     "cpdfsdk_annot.h",
+    "fpdf_atomic.cpp",
     "cpdfsdk_annotiteration.cpp",
     "cpdfsdk_annotiteration.h",
     "cpdfsdk_annotiterator.cpp",
