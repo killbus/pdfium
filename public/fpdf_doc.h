@@ -856,6 +856,62 @@ EPDFBookmark_SetAction(FPDF_DOCUMENT document,
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFBookmark_ClearTarget(FPDF_BOOKMARK bookmark);
 
+// Experimental EmbedPDF Extension API.
+// Get the color and flags of a bookmark.
+//
+//   bookmark - handle to the bookmark.
+//   r, g, b - pointers to receive the RGB color (0.0 to 1.0).
+//
+// Returns true if color is present.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFBookmark_GetColor(FPDF_BOOKMARK bookmark,
+                      float* r,
+                      float* g,
+                      float* b);
+
+// Experimental EmbedPDF Extension API.
+// Set the color of a bookmark.
+//
+//   bookmark - handle to the bookmark.
+//   r, g, b - RGB color values (0.0 to 1.0).
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFBookmark_SetColor(FPDF_BOOKMARK bookmark,
+                      float r,
+                      float g,
+                      float b);
+
+// Experimental EmbedPDF Extension API.
+// Get style flags of a bookmark.
+//
+//   bookmark - handle to the bookmark.
+//
+// Returns bit field: bit 0: italic, bit 1: bold.
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFBookmark_GetFlags(FPDF_BOOKMARK bookmark);
+
+// Experimental EmbedPDF Extension API.
+// Set style flags of a bookmark.
+//
+//   bookmark - handle to the bookmark.
+//   flags - bit field: bit 0: italic, bit 1: bold.
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFBookmark_SetFlags(FPDF_BOOKMARK bookmark, int flags);
+
+// Experimental EmbedPDF Extension API.
+// Set the /Count entry of a bookmark (controls expansion state).
+// Positive: expanded, Negative: collapsed.
+//
+//   bookmark - handle to the bookmark.
+//   count - integer value.
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFBookmark_SetCount(FPDF_BOOKMARK bookmark, int count);
+
 // Experimental EmbedPDF Outline API.
 // Clear all bookmarks from the document.
 //

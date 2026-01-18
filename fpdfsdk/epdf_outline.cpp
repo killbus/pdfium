@@ -787,6 +787,88 @@ EPDFBookmark_ClearTarget(FPDF_BOOKMARK bookmark) {
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFBookmark_GetColor(FPDF_BOOKMARK bookmark,
+                      float* r,
+                      float* g,
+                      float* b) {
+  if (!bookmark || !r || !g || !b)
+    return false;
+
+  const CPDF_Dictionary* bm_dict = CPDFDictionaryFromFPDFBookmark(bookmark);
+  if (!bm_dict)
+    return false;
+
+  RetainPtr<const CPDF_Array> color = bm_dict->GetArrayFor("C");
+  if (!color || color->size() < 3)
+    return false;
+
+  *r = color->GetFloatAt(0);
+  *g = color->GetFloatAt(1);
+  *b = color->GetFloatAt(2);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFBookmark_SetColor(FPDF_BOOKMARK bookmark,
+                      float r,
+                      float g,
+                      float b) {
+  if (!bookmark)
+    return false;
+
+  RetainPtr<CPDF_Dictionary> bm_dict(
+      pdfium::WrapRetain(CPDFDictionaryFromFPDFBookmark(bookmark)));
+  if (!bm_dict)
+    return false;
+
+  auto color_arr = bm_dict->SetNewFor<CPDF_Array>("C");
+  color_arr->AppendNew<CPDF_Number>(r);
+  color_arr->AppendNew<CPDF_Number>(g);
+  color_arr->AppendNew<CPDF_Number>(b);
+  return true;
+}
+
+FPDF_EXPORT int FPDF_CALLCONV
+EPDFBookmark_GetFlags(FPDF_BOOKMARK bookmark) {
+  if (!bookmark)
+    return 0;
+
+  const CPDF_Dictionary* bm_dict = CPDFDictionaryFromFPDFBookmark(bookmark);
+  if (!bm_dict)
+    return 0;
+
+  return bm_dict->GetIntegerFor("F");
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFBookmark_SetFlags(FPDF_BOOKMARK bookmark, int flags) {
+  if (!bookmark)
+    return false;
+
+  RetainPtr<CPDF_Dictionary> bm_dict(
+      pdfium::WrapRetain(CPDFDictionaryFromFPDFBookmark(bookmark)));
+  if (!bm_dict)
+    return false;
+
+  bm_dict->SetNewFor<CPDF_Number>("F", flags);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFBookmark_SetCount(FPDF_BOOKMARK bookmark, int count) {
+  if (!bookmark)
+    return false;
+
+  RetainPtr<CPDF_Dictionary> bm_dict(
+      pdfium::WrapRetain(CPDFDictionaryFromFPDFBookmark(bookmark)));
+  if (!bm_dict)
+    return false;
+
+  bm_dict->SetNewFor<CPDF_Number>("Count", count);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFBookmark_SetNamedDest(FPDF_BOOKMARK bookmark, FPDF_BYTESTRING name) {
   if (!bookmark || !name)
     return false;
