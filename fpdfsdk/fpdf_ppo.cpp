@@ -351,3 +351,70 @@ FPDF_PageImport_End(FPDF_PAGEIMPORT session) {
   delete reinterpret_cast<fpdf_pageimport_t__*>(session);
 }
 
+// ... existing FPDF_PageImport_End ...
+
+struct fpdf_xobject_session_t__ {
+  fpdf_xobject_session_t__(CPDF_Document* dest, CPDF_Document* src)
+      : dest_doc(dest), src_doc(src) {
+    exporter = std::make_unique<CPDF_NPageToOneExporter>(dest, src);
+  }
+
+  // ObservedPtr ensures we don't access destroyed documents
+  ObservedPtr<CPDF_Document> dest_doc;
+  ObservedPtr<CPDF_Document> src_doc;
+
+  // Persistent exporter to maintain object_number_map_ for deduplication
+  std::unique_ptr<CPDF_NPageToOneExporter> exporter;
+};
+
+FPDF_EXPORT FPDF_XOBJECT_SESSION FPDF_CALLCONV
+FPDF_XObject_BeginSession(FPDF_DOCUMENT dest_doc, FPDF_DOCUMENT src_doc) {
+  CPDF_Document* pDest = CPDFDocumentFromFPDFDocument(dest_doc);
+  CPDF_Document* pSrc = CPDFDocumentFromFPDFDocument(src_doc);
+  if (!pDest || !pSrc) {
+    return nullptr;
+  }
+
+  auto session = std::make_unique<fpdf_xobject_session_t__>(pDest, pSrc);
+  if (!session->exporter || !session->exporter->Init()) {
+    return nullptr;
+  }
+
+  return reinterpret_cast<FPDF_XOBJECT_SESSION>(session.release());
+}
+
+FPDF_EXPORT FPDF_XOBJECT FPDF_CALLCONV
+FPDF_XObject_CreateFromPage(FPDF_XOBJECT_SESSION session, int page_index) {
+  auto* s = reinterpret_cast<fpdf_xobject_session_t__*>(session);
+  if (!s || !s->exporter) {
+    return nullptr;
+  }
+
+  if (!s->dest_doc || !s->src_doc) {
+    return nullptr;
+  }
+
+  if (page_index < 0 ||
+      page_index >= static_cast<int>(s->src_doc->GetPageCount())) {
+    return nullptr;
+  }
+
+  // Use the persistent exporter to create the XObject context.
+  // This automatically leverages the internal object_number_map_ for 
+  // resource deduplication (Project Requirement).
+  std::unique_ptr<XObjectContext> xobj_ctx =
+      s->exporter->CreateXObjectContextFromPage(page_index);
+
+  if (!xobj_ctx || !xobj_ctx->xobject) {
+    return nullptr;
+  }
+
+  // RETURN CHANGE: Return the XObjectContext pointer, not the Stream pointer.
+  // The caller is responsible for closing this with FPDF_CloseXObject.
+  return FPDFXObjectFromXObjectContext(xobj_ctx.release());
+}
+
+FPDF_EXPORT void FPDF_CALLCONV
+FPDF_XObject_EndSession(FPDF_XOBJECT_SESSION session) {
+  delete reinterpret_cast<fpdf_xobject_session_t__*>(session);
+}

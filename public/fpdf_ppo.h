@@ -212,6 +212,61 @@ FPDF_EXPORT void FPDF_CALLCONV
 FPDF_PageImport_End(FPDF_PAGEIMPORT session);
 
 
+// Experimental API.
+// Handle to an XObject creation session.
+typedef struct fpdf_xobject_session_t__* FPDF_XOBJECT_SESSION;
+
+// Experimental API.
+// Handle to an XObject (a stream object in the PDF).
+typedef struct fpdf_xobject_t__* FPDF_XOBJECT;
+
+// Experimental API.
+// Begin an XObject creation session.
+//
+// The session maintains a persistent mapping of objects to ensure that
+// resources (fonts, images, etc.) are deduplicated when multiple XObjects
+// are created from the same source document.
+//
+//   dest_doc - Destination document where XObjects will be created.
+//   src_doc  - Source document to extract pages from.
+//
+// Returns a session handle on success, or NULL on failure.
+FPDF_EXPORT FPDF_XOBJECT_SESSION FPDF_CALLCONV
+FPDF_XObject_BeginSession(FPDF_DOCUMENT dest_doc, FPDF_DOCUMENT src_doc);
+
+// Experimental API.
+// Create an XObject from a source page using the session.
+//
+//   session    - Session handle from FPDF_XObject_BeginSession().
+//   page_index - Zero-based index of the source page in src_doc.
+//
+// Returns a handle to the created XObject on success, or NULL on failure.
+// The XObject is owned by the destination document.
+FPDF_EXPORT FPDF_XOBJECT FPDF_CALLCONV
+FPDF_XObject_CreateFromPage(FPDF_XOBJECT_SESSION session, int page_index);
+
+// Experimental API.
+// Create a FormObject from an XObject.
+//
+// This creates a page object (FPDF_PAGEOBJECT) that references the XObject.
+// This page object can then be positioned, transformed, and inserted into
+// a page using standard FPDFPageObj APIs.
+//
+//   xobject - XObject handle from FPDF_XObject_CreateFromPage().
+//
+// Returns a handle to the created FormObject on success, or NULL on failure.
+
+
+// Experimental API.
+// End an XObject creation session.
+//
+// This frees the session resources (including the deduplication map).
+// It does NOT delete the created XObjects, as they are owned by the dest_doc.
+//
+//   session - Session handle from FPDF_XObject_BeginSession().
+FPDF_EXPORT void FPDF_CALLCONV
+FPDF_XObject_EndSession(FPDF_XOBJECT_SESSION session);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus
