@@ -354,4 +354,13 @@ void SetColorFromScheme(const FPDF_COLORSCHEME* pColorScheme,
 std::vector<uint32_t> ParsePageRangeString(const ByteString& bsPageRange,
                                            uint32_t nCount);
 
+
+inline CPDF_Stream* CPDFStreamFromFPDFXObject(FPDF_XOBJECT xobject) {
+  return reinterpret_cast<CPDF_Stream*>(xobject);
+}
+
+inline FPDF_XOBJECT FPDFXObjectFromCPDFStream(CPDF_Stream* stream) {
+  return reinterpret_cast<FPDF_XOBJECT>(stream);
+}
+
 #endif  // FPDFSDK_CPDFSDK_HELPERS_H_
