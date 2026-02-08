@@ -3304,6 +3304,38 @@ EPDFPage_GetAnnotRaw(FPDF_DOCUMENT doc, int page_index, int index) {
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetNameValue(FPDF_ANNOTATION annot,
+                       FPDF_BYTESTRING key,
+                       FPDF_BYTESTRING name) {
+  RetainPtr<CPDF_Dictionary> pAnnotDict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!pAnnotDict) {
+    return false;
+  }
+
+  pAnnotDict->SetNewFor<CPDF_Name>(key, ByteString(name));
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetIntArrayValue(FPDF_ANNOTATION annot,
+                            FPDF_BYTESTRING key,
+                            const int* values,
+                            unsigned long count) {
+  RetainPtr<CPDF_Dictionary> pAnnotDict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!pAnnotDict) {
+    return false;
+  }
+
+  auto pArray = pAnnotDict->SetNewFor<CPDF_Array>(key);
+  for (unsigned long i = 0; i < count; ++i) {
+    pArray->AppendNew<CPDF_Number>(values[i]);
+  }
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFPage_RemoveAnnotRaw(FPDF_DOCUMENT doc, int page_index, int index) {
   CPDF_Document* pdf = CPDFDocumentFromFPDFDocument(doc);
   if (!pdf || page_index < 0 || page_index >= pdf->GetPageCount() || index < 0)
@@ -3484,6 +3516,17 @@ EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit) {
   // 9) Rewrite content stream from objects.
   UpdateContentStream(form, ap.Get());
   return true;
+}
+
+FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
+EPDFDoc_CreateIndirectDict(FPDF_DOCUMENT doc) {
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(doc);
+  if (!pDoc)
+    return nullptr;
+
+  RetainPtr<CPDF_Dictionary> dict = pDoc->NewIndirect<CPDF_Dictionary>();
+  auto ctx = std::make_unique<CPDF_AnnotContext>(dict, nullptr);
+  return FPDFAnnotationFromCPDFAnnotContext(ctx.release());
 }
 
 FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
