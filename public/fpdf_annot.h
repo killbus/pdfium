@@ -699,6 +699,22 @@ FPDFAnnot_SetStringValue(FPDF_ANNOTATION annot,
                          FPDF_WIDESTRING value);
 
 // Experimental API.
+// Set the hex-encoded string value corresponding to |key| in |annot|'s
+// dictionary, overwriting the existing value if any.
+//
+//   annot  - handle to an annotation.
+//   key    - the key to the dictionary entry to be set, encoded in UTF-8.
+//   data   - the binary data to be set.
+//   len    - the length of the binary data.
+//
+// Returns true if successful.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetHexBinaryValue(FPDF_ANNOTATION annot,
+                            FPDF_BYTESTRING key,
+                            const unsigned char* data,
+                            unsigned long len);
+
+// Experimental API.
 // Get the string value corresponding to |key| in |annot|'s dictionary. |buffer|
 // is only modified if |buflen| is longer than the length of contents. Note that
 // if |key| does not exist in the dictionary or if |key|'s corresponding value

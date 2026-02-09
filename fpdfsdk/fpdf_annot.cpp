@@ -854,6 +854,7 @@ FPDFAnnot_IsSupportedSubtype(FPDF_ANNOTATION_SUBTYPE subtype) {
     case FPDF_ANNOT_POLYGON:
     case FPDF_ANNOT_POLYLINE:
     case FPDF_ANNOT_LINE:
+    case FPDF_ANNOT_WIDGET:
       return true;
     default:
       return false;
@@ -3224,31 +3225,47 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_SetLinkedAnnot(FPDF_ANNOTATION annot,
                          FPDF_BYTESTRING key,
                          FPDF_ANNOTATION linked_annot) {
-  if (!annot || !key) return false;
+  if (!annot || !key)
+    return false;
 
-  CPDF_AnnotContext* src = CPDFAnnotContextFromFPDFAnnotation(annot);
-  CPDF_AnnotContext* dst = CPDFAnnotContextFromFPDFAnnotation(linked_annot);
-  if (!src) return false;
+  CPDF_AnnotContext* src_ctx = CPDFAnnotContextFromFPDFAnnotation(annot);
+  if (!src_ctx)
+    return false;
 
-  RetainPtr<CPDF_Dictionary> src_dict = src->GetMutableAnnotDict();
-  if (!src_dict) return false;
+  RetainPtr<CPDF_Dictionary> src_dict = src_ctx->GetMutableAnnotDict();
+  if (!src_dict)
+    return false;
 
-  if (!linked_annot) { src_dict->RemoveFor(key); return true; }
+  if (!linked_annot) {
+    src_dict->RemoveFor(key);
+    return true;
+  }
 
-  if (!dst) return false;
+  CPDF_AnnotContext* dst_ctx = CPDFAnnotContextFromFPDFAnnotation(linked_annot);
+  if (!dst_ctx)
+    return false;
 
-  IPDF_Page* sp = src->GetPage();
-  IPDF_Page* dp = dst->GetPage();
-  if (!sp || !dp) return false;
+  RetainPtr<CPDF_Dictionary> dst_dict = dst_ctx->GetMutableAnnotDict();
+  if (!dst_dict)
+    return false;
 
-  CPDF_Document* doc = sp->GetDocument();
-  if (doc != dp->GetDocument()) return false;
+  // Attempt to find document from the source context (which should be on a page).
+  CPDF_Document* doc = nullptr;
+  if (src_ctx->GetPage()) {
+    doc = src_ctx->GetPage()->GetDocument();
+  }
 
-  RetainPtr<CPDF_Dictionary> dst_dict = dst->GetMutableAnnotDict();
-  if (!dst_dict) return false;
+  // Fallback: Check destination context if source has no page.
+  if (!doc && dst_ctx->GetPage()) {
+    doc = dst_ctx->GetPage()->GetDocument();
+  }
+
+  if (!doc)
+    return false;
 
   const uint32_t objnum = EnsureIndirect(doc, dst_dict);
-  if (objnum == 0) return false;
+  if (objnum == 0)
+    return false;
 
   src_dict->SetNewFor<CPDF_Reference>(key, doc, objnum);
   return true;
@@ -3551,6 +3568,24 @@ EPDFPage_CreateAnnot(FPDF_PAGE page, FPDF_ANNOTATION_SUBTYPE subtype) {
   // Build the public handle
   auto ctx = std::make_unique<CPDF_AnnotContext>(dict, IPDFPageFromFPDFPage(page));
   return FPDFAnnotationFromCPDFAnnotContext(ctx.release());
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFAnnot_SetHexBinaryValue(FPDF_ANNOTATION annot,
+                            FPDF_BYTESTRING key,
+                            const unsigned char* data,
+                            unsigned long len) {
+  RetainPtr<CPDF_Dictionary> pAnnotDict =
+      GetMutableAnnotDictFromFPDFAnnotation(annot);
+  if (!pAnnotDict) {
+    return false;
+  }
+
+  // SAFETY: required from caller.
+  pAnnotDict->SetNewFor<CPDF_String>(
+      key, UNSAFE_BUFFERS(pdfium::span<const uint8_t>(data, len)),
+      CPDF_String::DataType::kIsHex);
+  return true;
 }
 
 FPDF_EXPORT FPDF_ANNOT_REPLY_TYPE FPDF_CALLCONV
