@@ -32,6 +32,7 @@ class IFX_WriteStream {
 class IFX_ArchiveStream : public IFX_WriteStream {
  public:
   virtual FX_FILESIZE CurrentOffset() const = 0;
+  virtual void SetOffset(FX_FILESIZE offset) = 0;
 };
 
 class IFX_StreamWithSize {

@@ -1137,6 +1137,7 @@ const CPDF_ObjectStream* CPDF_Parser::GetObjectStream(uint32_t object_number) {
 
 RetainPtr<CPDF_Object> CPDF_Parser::ParseIndirectObjectAt(FX_FILESIZE pos,
                                                           uint32_t objnum) {
+  CPDF_Object::ScopedDirtyTrackingBlocker blocker;
   const FX_FILESIZE saved_pos = syntax_->GetPos();
   syntax_->SetPos(pos);
 
@@ -1171,6 +1172,7 @@ void CPDF_Parser::SetLinearizedHeaderForTesting(
 }
 
 RetainPtr<CPDF_Dictionary> CPDF_Parser::LoadTrailer() {
+  CPDF_Object::ScopedDirtyTrackingBlocker blocker;
   if (syntax_->GetKeyword() != "trailer") {
     return nullptr;
   }

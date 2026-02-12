@@ -285,6 +285,7 @@ CPDF_Object* CPDF_Dictionary::SetForInternal(const ByteString& key,
   CHECK(!pObj->IsStream());
   CPDF_Object* pRet = pObj.Get();
   map_[MaybeIntern(key)] = std::move(pObj);
+  SetDirty(true);
   return pRet;
 }
 
@@ -308,6 +309,7 @@ RetainPtr<CPDF_Object> CPDF_Dictionary::RemoveFor(ByteStringView key) {
   if (it != map_.end()) {
     result = std::move(it->second);
     map_.erase(it);
+    SetDirty(true);
   }
   return result;
 }
@@ -327,6 +329,7 @@ void CPDF_Dictionary::ReplaceKey(const ByteString& oldkey,
 
   map_[MaybeIntern(newkey)] = std::move(old_it->second);
   map_.erase(old_it);
+  SetDirty(true);
 }
 
 void CPDF_Dictionary::SetRectFor(const ByteString& key,

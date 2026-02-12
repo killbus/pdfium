@@ -41,7 +41,7 @@ class CPDF_Creator {
   // Returns false if initialization fails.
   // Used by FPDF_CreateSaveSession for chunked PDF generation.
   // After calling this, use ContinueOneStep() to execute incrementally.
-  bool Initialize(uint32_t flags);
+  bool Initialize(uint32_t flags, FX_FILESIZE starting_offset = 0);
 
   // Executes one step of the save process for chunked saving.
   // Returns: 1 if more work remains, 0 if complete, -1 on error.

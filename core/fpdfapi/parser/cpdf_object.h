@@ -12,6 +12,7 @@
 #include <set>
 #include <type_traits>
 
+#include "core/fxcrt/fx_memory.h"
 #include "core/fxcrt/fx_string.h"
 #include "core/fxcrt/retain_ptr.h"
 
@@ -66,6 +67,34 @@ class CPDF_Object : public Retainable {
   void SetObjNum(uint32_t objnum) { obj_num_ = objnum; }
   uint32_t GetGenNum() const { return gen_num_; }
   void SetGenNum(uint32_t gennum) { gen_num_ = gennum; }
+  bool IsDirty() const { return dirty_; }
+  void SetDirty(bool dirty) {
+    if (dirty && !IsDirtyTrackingEnabled()) {
+      return;
+    }
+    dirty_ = dirty;
+  }
+
+  // RAII class to temporarily suppress dirty tracking.
+  // This is used during parsing to prevent objects from being marked as dirty
+  // when they are being loaded from the file.
+  class ScopedDirtyTrackingBlocker {
+   public:
+    FX_STACK_ALLOCATED();
+
+    ScopedDirtyTrackingBlocker();
+    ~ScopedDirtyTrackingBlocker();
+
+    ScopedDirtyTrackingBlocker(const ScopedDirtyTrackingBlocker&) = delete;
+    ScopedDirtyTrackingBlocker& operator=(const ScopedDirtyTrackingBlocker&) =
+        delete;
+
+   private:
+    bool was_enabled_;
+  };
+
+  static bool IsDirtyTrackingEnabled();
+
   bool IsInline() const { return obj_num_ == 0; }
   uint64_t KeyForCache() const;
 
@@ -156,6 +185,7 @@ class CPDF_Object : public Retainable {
 
   uint32_t obj_num_ = 0;
   uint32_t gen_num_ = 0;
+  bool dirty_ = false;
 };
 
 template <typename T>

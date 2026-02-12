@@ -206,12 +206,14 @@ RetainPtr<const CPDF_String> CPDF_Array::GetStringAt(size_t index) const {
 void CPDF_Array::Clear() {
   CHECK(!IsLocked());
   objects_.clear();
+  SetDirty(true);
 }
 
 void CPDF_Array::RemoveAt(size_t index) {
   CHECK(!IsLocked());
   if (index < objects_.size()) {
     objects_.erase(objects_.begin() + index);
+    SetDirty(true);
   }
 }
 
@@ -254,6 +256,7 @@ CPDF_Object* CPDF_Array::SetAtInternal(size_t index,
 
   CPDF_Object* pRet = pObj.Get();
   objects_[index] = std::move(pObj);
+  SetDirty(true);
   return pRet;
 }
 
@@ -269,6 +272,7 @@ CPDF_Object* CPDF_Array::InsertAtInternal(size_t index,
 
   CPDF_Object* pRet = pObj.Get();
   objects_.insert(objects_.begin() + index, std::move(pObj));
+  SetDirty(true);
   return pRet;
 }
 
@@ -279,6 +283,7 @@ CPDF_Object* CPDF_Array::AppendInternal(RetainPtr<CPDF_Object> pObj) {
   CHECK(!pObj->IsStream());
   CPDF_Object* pRet = pObj.Get();
   objects_.push_back(std::move(pObj));
+  SetDirty(true);
   return pRet;
 }
 

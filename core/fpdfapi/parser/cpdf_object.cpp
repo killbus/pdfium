@@ -17,6 +17,26 @@
 #include "core/fxcrt/fx_string.h"
 #include "core/fxcrt/notreached.h"
 
+namespace {
+
+thread_local bool g_dirty_tracking_enabled = true;
+
+}  // namespace
+
+// static
+bool CPDF_Object::IsDirtyTrackingEnabled() {
+  return g_dirty_tracking_enabled;
+}
+
+CPDF_Object::ScopedDirtyTrackingBlocker::ScopedDirtyTrackingBlocker()
+    : was_enabled_(g_dirty_tracking_enabled) {
+  g_dirty_tracking_enabled = false;
+}
+
+CPDF_Object::ScopedDirtyTrackingBlocker::~ScopedDirtyTrackingBlocker() {
+  g_dirty_tracking_enabled = was_enabled_;
+}
+
 CPDF_Object::~CPDF_Object() = default;
 
 static_assert(sizeof(uint64_t) >= sizeof(CPDF_Object*),

@@ -139,6 +139,7 @@ void CPDF_Stream::TakeData(DataVector<uint8_t> data) {
   const int size = pdfium::checked_cast<int>(data.size());
   data_ = std::move(data);
   SetLengthInDict(size);
+  SetDirty(true);
 }
 
 void CPDF_Stream::SetDataFromStringstream(fxcrt::ostringstream* stream) {

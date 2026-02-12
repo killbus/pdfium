@@ -61,6 +61,38 @@ FPDF_CreateSaveSession(FPDF_DOCUMENT document,
   return reinterpret_cast<FPDF_SAVE_SESSION>(session.release());
 }
 
+FPDF_EXPORT FPDF_SAVE_SESSION FPDF_CALLCONV
+FPDF_CreateIncrementalSaveSession(FPDF_DOCUMENT document,
+                                  FPDF_FILEWRITE* pFileWrite,
+                                  FPDF_DWORD flags,
+                                  int fileVersion,
+                                  long long startingOffset) {
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(document);
+  if (!pDoc || !pFileWrite) {
+    return nullptr;
+  }
+
+  auto session = std::make_unique<FPDF_SaveSessionData>();
+
+  // Create CPDF_Creator with file write adapter
+  session->creator = std::make_unique<CPDF_Creator>(
+      pDoc, pdfium::MakeRetain<CPDFSDK_FileWriteAdapter>(pFileWrite));
+
+  // Set file version if specified
+  if (fileVersion >= 10 && fileVersion <= 17) {
+    if (!session->creator->SetFileVersion(fileVersion)) {
+      return nullptr;
+    }
+  }
+
+  // Initialize the save process with starting offset
+  if (!session->creator->Initialize(flags, static_cast<FX_FILESIZE>(startingOffset))) {
+    return nullptr;
+  }
+
+  return reinterpret_cast<FPDF_SAVE_SESSION>(session.release());
+}
+
 FPDF_EXPORT int FPDF_CALLCONV
 FPDF_SaveNextChunk(FPDF_SAVE_SESSION session) {
   auto* data = reinterpret_cast<FPDF_SaveSessionData*>(session);

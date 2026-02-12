@@ -879,6 +879,9 @@ FPDFPage_CreateAnnot(FPDF_PAGE page, FPDF_ANNOTATION_SUBTYPE subtype) {
   RetainPtr<CPDF_Array> pAnnotList = pPage->GetOrCreateAnnotsArray();
   pAnnotList->Append(dict);
 
+  // Mark the page dictionary as dirty so the new annotation reference is saved.
+  pPage->GetMutableDict()->SetDirty(true);
+
   // Caller takes ownership.
   return FPDFAnnotationFromCPDFAnnotContext(pNewAnnot.release());
 }

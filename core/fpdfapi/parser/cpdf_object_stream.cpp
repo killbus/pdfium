@@ -77,6 +77,7 @@ RetainPtr<CPDF_Object> CPDF_ObjectStream::ParseObject(
     CPDF_IndirectObjectHolder* pObjList,
     uint32_t obj_number,
     uint32_t archive_obj_index) const {
+  CPDF_Object::ScopedDirtyTrackingBlocker blocker;
   if (archive_obj_index >= object_info_.size()) {
     return nullptr;
   }

@@ -46,6 +46,7 @@ class CFX_FileBufferArchive final : public IFX_ArchiveStream {
 
   bool WriteBlock(pdfium::span<const uint8_t> buffer) override;
   FX_FILESIZE CurrentOffset() const override { return offset_; }
+  void SetOffset(FX_FILESIZE offset) override { offset_ = offset; }
 
  private:
   bool Flush();
@@ -243,16 +244,34 @@ bool CPDF_Creator::WriteNewObjs() {
 void CPDF_Creator::InitNewObjNumOffsets() {
   for (const auto& pair : *document_) {
     const uint32_t objnum = pair.first;
-    if (is_incremental_ ||
-        pair.second->GetObjNum() == CPDF_Object::kInvalidObjNum) {
+    if (pair.second->GetObjNum() == CPDF_Object::kInvalidObjNum) {
+      continue;
+    }
+
+    // ARCHITECTURAL REFINEMENT FOR O(1) SIGNING:
+    // In incremental mode where we aren't copying the original (is_incremental_ && !is_original_),
+    // we must treat any modified "old" object as a "new" object for this revision.
+    // This ensures:
+    // 1. It gets written by WriteNewObjs.
+    // 2. It gets a valid XRef entry in WriteDoc_Stage3 (Incremental branch).
+    if (is_incremental_ && !is_original_) {
+      // SYSTEMATIC DIRTY TRACKING:
+      // In incremental O(1) mode, we only write objects that have been
+      // explicitly marked as dirty (data modified) or are completely new.
+      if (pair.second->IsDirty()) {
+        new_obj_num_array_.push_back(objnum);
+      }
+      continue;
+    }
+
+    if (is_incremental_) {
       continue;
     }
     if (parser_ && parser_->IsValidObjectNumber(objnum) &&
         !parser_->IsObjectFree(objnum)) {
       continue;
     }
-    new_obj_num_array_.insert(
-        std::ranges::lower_bound(new_obj_num_array_, objnum), objnum);
+    new_obj_num_array_.push_back(objnum);
   }
 }
 
@@ -626,7 +645,7 @@ CPDF_Creator::Stage CPDF_Creator::WriteDoc_Stage4() {
   return stage_;
 }
 
-bool CPDF_Creator::Initialize(uint32_t flags) {
+bool CPDF_Creator::Initialize(uint32_t flags, FX_FILESIZE starting_offset) {
   is_incremental_ = !!(flags & FPDFCREATE_INCREMENTAL);
   is_original_ = !(flags & FPDFCREATE_NO_ORIGINAL);
 
@@ -636,6 +655,10 @@ bool CPDF_Creator::Initialize(uint32_t flags) {
   new_obj_num_array_.clear();
   objects_with_refs_.clear();
   has_init_refs_ = false;
+
+  if (is_incremental_ && !is_original_ && starting_offset > 0) {
+    archive_->SetOffset(starting_offset);
+  }
 
   InitID();
   return true;

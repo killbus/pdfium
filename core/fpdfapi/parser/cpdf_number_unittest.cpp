@@ -25,6 +25,7 @@ class ByteStringArchiveStream : public IFX_ArchiveStream {
     return true;
   }
   FX_FILESIZE CurrentOffset() const override { NOTREACHED(); }
+  void SetOffset(FX_FILESIZE offset) override {}
 
   const ByteString& str() const { return str_; }
 

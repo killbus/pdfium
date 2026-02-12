@@ -40,6 +40,27 @@ FPDF_CreateSaveSession(FPDF_DOCUMENT document,
                        FPDF_DWORD flags,
                        int fileVersion);
 
+// Function: FPDF_CreateIncrementalSaveSession
+//          Creates a new chunked save session for asynchronous PDF generation,
+//          starting at a specific physical file offset.
+//          This is used for O(1) incremental signing where the generated
+//          data is appended to an existing file.
+// Parameters:
+//          document      -   Handle to document to save.
+//          pFileWrite    -   Pointer to custom file write structure.
+//          flags         -   Save flags (FPDF_INCREMENTAL, etc).
+//          fileVersion   -   PDF version.
+//          startingOffset -  The physical file offset where the data will be appended.
+// Return value:
+//          Session handle on success, NULL on failure.
+//
+FPDF_EXPORT FPDF_SAVE_SESSION FPDF_CALLCONV
+FPDF_CreateIncrementalSaveSession(FPDF_DOCUMENT document,
+                                  FPDF_FILEWRITE* pFileWrite,
+                                  FPDF_DWORD flags,
+                                  int fileVersion,
+                                  long long startingOffset);
+
 // Function: FPDF_SaveNextChunk
 //          Generates the next chunk of PDF data (approximately 64KB).
 //          Call repeatedly until it returns 0 to generate the complete PDF.
