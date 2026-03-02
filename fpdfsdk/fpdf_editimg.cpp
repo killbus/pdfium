@@ -26,7 +26,9 @@
 #include "core/fpdfapi/render/cpdf_imagerenderer.h"
 #include "core/fpdfapi/render/cpdf_rendercontext.h"
 #include "core/fpdfapi/render/cpdf_renderstatus.h"
+#include "core/fxcrt/cfx_read_only_span_stream.h"
 #include "core/fxcrt/compiler_specific.h"
+#include "core/fxcrt/span.h"
 #include "core/fxcrt/notreached.h"
 #include "core/fxcrt/stl_util.h"
 #include "core/fxge/cfx_defaultrenderdevice.h"
@@ -134,6 +136,38 @@ FPDFPageObj_NewImageObj(FPDF_DOCUMENT document) {
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+FPDFImageObj_LoadJpegBuffer(FPDF_PAGE* pages,
+                            int count,
+                            FPDF_PAGEOBJECT image_object,
+                            const void* buffer,
+                            unsigned long len) {
+  if (!image_object || !buffer || len == 0) {
+    return false;
+  }
+
+  CPDF_ImageObject* pImgObj = CPDFImageObjectFromFPDFPageObject(image_object);
+  if (!pImgObj) {
+    return false;
+  }
+
+  if (pages) {
+    for (int index = 0; index < count; index++) {
+      CPDF_Page* pPage = CPDFPageFromFPDFPage(UNSAFE_TODO(pages[index]));
+      if (pPage) {
+        pImgObj->GetImage()->ResetCache(pPage);
+      }
+    }
+  }
+
+  auto pFile = pdfium::MakeRetain<CFX_ReadOnlySpanStream>(
+      UNSAFE_BUFFERS(pdfium::span<const uint8_t>(
+          static_cast<const uint8_t*>(buffer), static_cast<size_t>(len))));
+  pImgObj->GetImage()->SetJpegImageInline(std::move(pFile));
+  pImgObj->SetDirty(true);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 FPDFImageObj_LoadJpegFile(FPDF_PAGE* pages,
                           int count,
                           FPDF_PAGEOBJECT image_object,
@@ -195,6 +229,22 @@ FPDFImageObj_SetBitmap(FPDF_PAGE* pages,
   }
 
   pImgObj->GetImage()->SetImage(holder);
+  pImgObj->CalcBoundingBox();
+  pImgObj->SetDirty(true);
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+FPDFImageObj_SetImageData(FPDF_PAGEOBJECT image_object,
+                          FPDF_PAGEOBJECT source_image_object) {
+  CPDF_ImageObject* pImgObj = CPDFImageObjectFromFPDFPageObject(image_object);
+  CPDF_ImageObject* pSrcImgObj =
+      CPDFImageObjectFromFPDFPageObject(source_image_object);
+  if (!pImgObj || !pSrcImgObj) {
+    return false;
+  }
+
+  pImgObj->SetImage(pSrcImgObj->GetImage());
   pImgObj->CalcBoundingBox();
   pImgObj->SetDirty(true);
   return true;

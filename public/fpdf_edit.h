@@ -684,6 +684,24 @@ FPDFImageObj_LoadJpegFile(FPDF_PAGE* pages,
                           FPDF_PAGEOBJECT image_object,
                           FPDF_FILEACCESS* file_access);
 
+// Experimental API.
+// Load an image from a JPEG image buffer and then set it into |image_object|.
+// The image content is copied to the file.
+//
+//   pages        - pointer to the start of all loaded pages, may be NULL.
+//   count        - number of |pages|, may be 0.
+//   image_object - handle to an image object.
+//   buffer       - buffer containing the JPEG image.
+//   len          - length of the buffer.
+//
+// Returns TRUE on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+FPDFImageObj_LoadJpegBuffer(FPDF_PAGE* pages,
+                            int count,
+                            FPDF_PAGEOBJECT image_object,
+                            const void* buffer,
+                            unsigned long len);
+
 // Load an image from a JPEG image file and then set it into |image_object|.
 //
 //   pages        - pointer to the start of all loaded pages, may be NULL.
@@ -746,6 +764,18 @@ FPDFImageObj_SetBitmap(FPDF_PAGE* pages,
                        int count,
                        FPDF_PAGEOBJECT image_object,
                        FPDF_BITMAP bitmap);
+
+// Experimental API.
+// Set the image data of |image_object| to be the same as |source_image_object|.
+// Both |image_object| and |source_image_object| must be image objects.
+//
+//   image_object        - handle to an image object.
+//   source_image_object - handle to a source image object.
+//
+// Returns TRUE on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+FPDFImageObj_SetImageData(FPDF_PAGEOBJECT image_object,
+                          FPDF_PAGEOBJECT source_image_object);
 
 // Get a bitmap rasterization of |image_object|. FPDFImageObj_GetBitmap() only
 // operates on |image_object| and does not take the associated image mask into

@@ -90,6 +90,7 @@ uint32_t CPDF_IndirectObjectHolder::AddIndirectObject(
     RetainPtr<CPDF_Object> pObj) {
   CHECK(!pObj->GetObjNum());
   pObj->SetObjNum(++last_obj_num_);
+  pObj->SetDirty(true);
   indirect_objs_[last_obj_num_] = std::move(pObj);
   return last_obj_num_;
 }
