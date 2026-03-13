@@ -1030,6 +1030,10 @@ const CPDF_Dictionary* CPDF_Parser::GetTrailer() const {
   return cross_ref_table_->trailer();
 }
 
+RetainPtr<CPDF_ReadValidator> CPDF_Parser::GetValidator() const {
+  return syntax_ ? syntax_->GetValidator() : nullptr;
+}
+
 CPDF_Dictionary* CPDF_Parser::GetMutableTrailerForTesting() {
   return cross_ref_table_->GetMutableTrailerForTesting();
 }

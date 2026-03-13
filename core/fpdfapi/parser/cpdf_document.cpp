@@ -199,6 +199,10 @@ RetainPtr<CPDF_Object> CPDF_Document::ParseIndirectObject(uint32_t objnum) {
   return parser_ ? parser_->ParseIndirectObject(objnum) : nullptr;
 }
 
+RetainPtr<CPDF_ReadValidator> CPDF_Document::GetValidator() const {
+  return parser_ ? parser_->GetValidator() : nullptr;
+}
+
 bool CPDF_Document::TryInit() {
   SetLastObjNum(parser_->GetLastObjNum());
 

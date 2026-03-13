@@ -12,6 +12,7 @@
 
 #include "core/fpdfapi/parser/cpdf_object.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
+#include "core/fpdfapi/parser/cpdf_read_validator.h"
 #include "core/fxcrt/check.h"
 
 namespace {
@@ -20,6 +21,25 @@ const CPDF_Object* FilterInvalidObjNum(const CPDF_Object* obj) {
   return obj && obj->GetObjNum() != CPDF_Object::kInvalidObjNum ? obj : nullptr;
 }
 
+class ScopedIndirectObjectEmptyEntryEraser {
+ public:
+  FX_STACK_ALLOCATED();
+  ScopedIndirectObjectEmptyEntryEraser(
+      std::map<uint32_t, RetainPtr<CPDF_Object>>* map,
+      std::map<uint32_t, RetainPtr<CPDF_Object>>::iterator it)
+      : map_(map), it_(it) {}
+  ~ScopedIndirectObjectEmptyEntryEraser() {
+    if (map_) {
+      map_->erase(it_);
+    }
+  }
+  void Success() { map_ = nullptr; }
+
+ private:
+  UnownedPtr<std::map<uint32_t, RetainPtr<CPDF_Object>>> map_;
+  std::map<uint32_t, RetainPtr<CPDF_Object>>::iterator it_;
+};
+
 }  // namespace
 
 CPDF_IndirectObjectHolder::CPDF_IndirectObjectHolder()
@@ -27,6 +47,10 @@ CPDF_IndirectObjectHolder::CPDF_IndirectObjectHolder()
 
 CPDF_IndirectObjectHolder::~CPDF_IndirectObjectHolder() {
   byte_string_pool_.DeleteObject();  // Make weak.
+}
+
+RetainPtr<CPDF_ReadValidator> CPDF_IndirectObjectHolder::GetValidator() const {
+  return nullptr;
 }
 
 RetainPtr<const CPDF_Object> CPDF_IndirectObjectHolder::GetIndirectObject(
@@ -67,12 +91,32 @@ CPDF_Object* CPDF_IndirectObjectHolder::GetOrParseIndirectObjectInternal(
     return const_cast<CPDF_Object*>(
         FilterInvalidObjNum(insert_result.first->second.Get()));
   }
-  RetainPtr<CPDF_Object> pNewObj = ParseIndirectObject(objnum);
-  if (!pNewObj) {
-    indirect_objs_.erase(insert_result.first);
-    return nullptr;
+
+  ScopedIndirectObjectEmptyEntryEraser eraser_guard(&indirect_objs_,
+                                                     insert_result.first);
+  RetainPtr<CPDF_Object> pNewObj;
+  RetainPtr<CPDF_ReadValidator> validator = GetValidator();
+  {
+    std::optional<CPDF_ReadValidator::ScopedSession> session;
+    if (validator) {
+      session.emplace(validator);
+    }
+    pNewObj = ParseIndirectObject(objnum);
+    bool bReadProblem = validator && validator->has_read_problems();
+    if (bReadProblem || !pNewObj) {
+      if (!pNewObj) {
+        return nullptr;
+      }
+      pNewObj->SetObjNum(objnum);
+      // Best effort: Return the object for immediate use in the current operation,
+      // but do NOT call eraser_guard.Success(). This ensures that the (potentially
+      // tainted) object is not committed to the long-term cache, allowing
+      // recovery once underlying I/O issues (e.g., file locks) are resolved.
+      return pNewObj.Get();
+    }
   }
 
+  eraser_guard.Success();
   pNewObj->SetObjNum(objnum);
   last_obj_num_ = std::max(last_obj_num_, objnum);
 

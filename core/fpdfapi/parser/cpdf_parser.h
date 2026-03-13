@@ -116,6 +116,8 @@ class CPDF_Parser {
     return cross_ref_table_.get();
   }
 
+  RetainPtr<CPDF_ReadValidator> GetValidator() const;
+
   CPDF_Dictionary* GetMutableTrailerForTesting();
 
   RetainPtr<CPDF_Object> ParseIndirectObjectAtForTesting(FX_FILESIZE pos) {

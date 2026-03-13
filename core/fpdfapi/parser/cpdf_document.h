@@ -146,6 +146,7 @@ class CPDF_Document : public Observable,
   // CPDF_Parser::ParsedObjectsHolder:
   bool TryInit() override;
   RetainPtr<CPDF_Object> ParseIndirectObject(uint32_t objnum) override;
+  RetainPtr<CPDF_ReadValidator> GetValidator() const override;
 
   CPDF_Parser::Error LoadDoc(RetainPtr<IFX_SeekableReadStream> pFileAccess,
                              const ByteString& password);

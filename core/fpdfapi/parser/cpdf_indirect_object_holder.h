@@ -18,6 +18,8 @@
 #include "core/fxcrt/string_pool_template.h"
 #include "core/fxcrt/weak_ptr.h"
 
+class CPDF_ReadValidator;
+
 class CPDF_IndirectObjectHolder {
  public:
   using const_iterator =
@@ -25,6 +27,8 @@ class CPDF_IndirectObjectHolder {
 
   CPDF_IndirectObjectHolder();
   virtual ~CPDF_IndirectObjectHolder();
+
+  virtual RetainPtr<CPDF_ReadValidator> GetValidator() const;
 
   RetainPtr<CPDF_Object> GetOrParseIndirectObject(uint32_t objnum);
   RetainPtr<const CPDF_Object> GetIndirectObject(uint32_t objnum) const;

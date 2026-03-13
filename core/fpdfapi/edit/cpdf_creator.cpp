@@ -21,6 +21,7 @@
 #include "core/fpdfapi/parser/cpdf_flateencoder.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fpdfapi/parser/cpdf_parser.h"
+#include "core/fpdfapi/parser/cpdf_read_validator.h"
 #include "core/fpdfapi/parser/cpdf_security_handler.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfapi/parser/fpdf_parser_utility.h"
@@ -158,6 +159,11 @@ bool CPDF_Creator::WriteOldIndirectObject(uint32_t objnum) {
 
   bool bExistInMap = !!document_->GetIndirectObject(objnum);
   RetainPtr<CPDF_Object> pObj = document_->GetOrParseIndirectObject(objnum);
+  RetainPtr<CPDF_ReadValidator> validator = parser_->GetValidator();
+  if (validator && validator->has_read_problems()) {
+    return false;
+  }
+
   if (!pObj) {
     object_offsets_.erase(objnum);
     return true;
