@@ -6,12 +6,14 @@
 
 #include <array>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <utility>
 #include <vector>
 #include <algorithm>
 
 #include "constants/annotation_common.h"
+#include "constants/form_fields.h"
 #include "core/fpdfapi/edit/cpdf_pagecontentgenerator.h"
 #include "core/fpdfapi/edit/cpdf_text_redactor.h"
 #include "core/fpdfapi/page/cpdf_annotcontext.h"
@@ -3946,6 +3948,66 @@ EPDFAnnot_Flatten(FPDF_PAGE page, FPDF_ANNOTATION annot) {
     if (annots) {
       annots->RemoveAt(annot_index);
     }
+  }
+
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_RegisterSignatureWidget(FPDF_DOCUMENT doc, FPDF_ANNOTATION annot) {
+  CPDF_Document* pDoc = CPDFDocumentFromFPDFDocument(doc);
+  if (!pDoc)
+    return false;
+
+  const CPDF_Dictionary* pAnnotDict = GetAnnotDictFromFPDFAnnotation(annot);
+  if (!pAnnotDict)
+    return false;
+
+  // Initialize AcroForm dictionary if it doesn't exist.
+  // InitAcroFormDict handles the /AcroForm key in the Document Catalog.
+  RetainPtr<CPDF_Dictionary> pAcroForm =
+      CPDF_InteractiveForm::InitAcroFormDict(pDoc);
+  if (!pAcroForm)
+    return false;
+
+  // Set SigFlags: bit 0 (SignaturesExist) and bit 1 (AppendOnly).
+  // This is required for Adobe Acrobat to trigger the Signature Panel.
+  pAcroForm->SetNewFor<CPDF_Number>("SigFlags", 3);
+
+  // Get or create the /Fields array in AcroForm.
+  RetainPtr<CPDF_Array> pFields = pAcroForm->GetOrCreateArrayFor("Fields");
+  if (!pFields)
+    return false;
+
+  // PDFium Standardized Elegant Practice: Recursively find the Root Field node
+  // to comply with PDF ISO 32000 (AcroForm Fields array must only contain roots).
+  const CPDF_Dictionary* pRootFieldDict = pAnnotDict;
+  const CPDF_Dictionary* pLevel = pAnnotDict;
+  std::set<const CPDF_Dictionary*> visited;
+
+  while (pLevel) {
+    visited.insert(pLevel);
+    pRootFieldDict = pLevel;
+    pLevel = pLevel->GetDictFor(pdfium::form_fields::kParent).Get();
+    if (pdfium::Contains(visited, pLevel)) {
+      break; // Cycle detection (Robustness Anchor)
+    }
+  }
+
+  // Register the ROOT signature field if it's not already in the fields array.
+  // We check for duplicates to ensure idempotency.
+  bool already_exists = false;
+  for (size_t i = 0; i < pFields->size(); ++i) {
+    RetainPtr<const CPDF_Object> pObj = pFields->GetDirectObjectAt(i);
+    if (pObj && pObj->GetDict() == pRootFieldDict) {
+      already_exists = true;
+      break;
+    }
+  }
+
+  if (!already_exists) {
+    // Append a REFERENCE to the ROOT signature widget dictionary.
+    pFields->AppendNew<CPDF_Reference>(pDoc, pRootFieldDict->GetObjNum());
   }
 
   return true;

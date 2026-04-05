@@ -1628,13 +1628,26 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFAnnot_UpdateAppearanceToRect(FPDF_ANNOTATION annot, EPDF_STAMP_FIT fit);
 
 // Experimental EmbedPDF Extension API.
-// Create an indirect dictionary object in the document.
+// Create a new direct or indirect dictionary object in |doc|.
+// The caller is responsible for ensuring the object is correctly linked.
 //
 //   doc - handle to a document.
 //
-// Returns the handle to the dictionary object wrapper.
+// Returns a handle to the new dictionary object, or NULL on failure.
 FPDF_EXPORT FPDF_ANNOTATION FPDF_CALLCONV
 EPDFDoc_CreateIndirectDict(FPDF_DOCUMENT doc);
+
+// Experimental EmbedPDF Extension API.
+// Register a signature widget annotation in the document's AcroForm field tree.
+// This ensures professional discovery by readers like Adobe Acrobat.
+// Sets /SigFlags to 3 (SignaturesExist | AppendOnly) internally.
+//
+//   doc   - handle to a document.
+//   annot - handle to a signature widget annotation.
+//
+// Returns true on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFDoc_RegisterSignatureWidget(FPDF_DOCUMENT doc, FPDF_ANNOTATION annot);
 
 // Experimental EmbedPDF Extension API.
 // Create an annotation. (the difference from FPDFPage_CreateAnnot is that it creates an indirect object)
