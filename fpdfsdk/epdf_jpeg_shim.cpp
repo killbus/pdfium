@@ -101,8 +101,6 @@ extern "C" size_t EPDF_JPEG_EncodeRGBA(uint8_t* rgba,
   jpeg_compress_struct cinfo;
   JpegErrorMgr jerr;
   MemDestMgr dest_mgr;
-  uint8_t* rgb_row = nullptr;
-
   cinfo.err = jpeg_std_error(&jerr.pub);
   jerr.pub.error_exit = JpegErrorExit;
 
@@ -110,7 +108,6 @@ extern "C" size_t EPDF_JPEG_EncodeRGBA(uint8_t* rgba,
   if (setjmp(jerr.setjmp_buffer)) {
     jpeg_destroy_compress(&cinfo);
     free(dest_mgr.data);
-    free(rgb_row); // Also free the temp row buffer on error.
     return 0;
   }
 
@@ -119,35 +116,18 @@ extern "C" size_t EPDF_JPEG_EncodeRGBA(uint8_t* rgba,
 
   cinfo.image_width = width;
   cinfo.image_height = height;
-  cinfo.input_components = 3;      // 3 for RGB.
-  cinfo.in_color_space = JCS_RGB;  // Use standard RGB color space.
+  cinfo.input_components = 4;
+  cinfo.in_color_space = JCS_EXT_RGBX;
 
   jpeg_set_defaults(&cinfo);
   jpeg_set_quality(&cinfo, ClampQuality(quality), TRUE);
 
   jpeg_start_compress(&cinfo, TRUE);
 
-  // Allocate a temporary buffer to hold one row of RGB data.
-  size_t rgb_row_size = width * 3;
-  rgb_row = static_cast<uint8_t*>(malloc(rgb_row_size));
-  if (!rgb_row) {
-    ERREXIT(&cinfo, JERR_OUT_OF_MEMORY);
-  }
-
-  // Feed rows of pixel data to the compressor.
   while (cinfo.next_scanline < cinfo.image_height) {
-    uint8_t* rgba_row_pointer = rgba + cinfo.next_scanline * stride;
-    // Convert this row from RGBA to RGB, skipping the alpha channel.
-    for (int x = 0; x < width; ++x) {
-      rgb_row[x * 3 + 0] = rgba_row_pointer[x * 4 + 0]; // R
-      rgb_row[x * 3 + 1] = rgba_row_pointer[x * 4 + 1]; // G
-      rgb_row[x * 3 + 2] = rgba_row_pointer[x * 4 + 2]; // B
-    }
-    jpeg_write_scanlines(&cinfo, &rgb_row, 1);
+    JSAMPROW row = rgba + cinfo.next_scanline * stride;
+    jpeg_write_scanlines(&cinfo, &row, 1);
   }
-
-  free(rgb_row);  // Clean up the temporary buffer.
-  rgb_row = nullptr; // Avoid double-free in error handler.
 
   jpeg_finish_compress(&cinfo);
   jpeg_destroy_compress(&cinfo);
