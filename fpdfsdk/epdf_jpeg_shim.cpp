@@ -86,15 +86,16 @@ static inline int ClampQuality(int q) {
   return q < 0 ? 0 : (q > 100 ? 100 : q);
 }
 
-}  // namespace
-
-extern "C" size_t EPDF_JPEG_EncodeRGBA(uint8_t* rgba,
-                                       int width,
-                                       int height,
-                                       int stride,
-                                       int quality,
-                                       uint8_t** out_ptr) {
-  if (!rgba || !out_ptr || width <= 0 || height <= 0 || stride <= 0)
+// Common helper to compress an image buffer to JPEG.
+size_t EPDF_JPEG_EncodeCommon(const uint8_t* buffer,
+                              int width,
+                              int height,
+                              int stride,
+                              int quality,
+                              int input_components,
+                              J_COLOR_SPACE color_space,
+                              uint8_t** out_ptr) {
+  if (!buffer || !out_ptr || width <= 0 || height <= 0 || stride <= 0)
     return 0;
   *out_ptr = nullptr;
 
@@ -116,8 +117,8 @@ extern "C" size_t EPDF_JPEG_EncodeRGBA(uint8_t* rgba,
 
   cinfo.image_width = width;
   cinfo.image_height = height;
-  cinfo.input_components = 4;
-  cinfo.in_color_space = JCS_EXT_RGBX;
+  cinfo.input_components = input_components;
+  cinfo.in_color_space = color_space;
 
   jpeg_set_defaults(&cinfo);
   jpeg_set_quality(&cinfo, ClampQuality(quality), TRUE);
@@ -125,7 +126,7 @@ extern "C" size_t EPDF_JPEG_EncodeRGBA(uint8_t* rgba,
   jpeg_start_compress(&cinfo, TRUE);
 
   while (cinfo.next_scanline < cinfo.image_height) {
-    JSAMPROW row = rgba + cinfo.next_scanline * stride;
+    JSAMPROW row = const_cast<uint8_t*>(buffer) + cinfo.next_scanline * stride;
     jpeg_write_scanlines(&cinfo, &row, 1);
   }
 
@@ -140,4 +141,63 @@ extern "C" size_t EPDF_JPEG_EncodeRGBA(uint8_t* rgba,
   // Success!
   *out_ptr = dest_mgr.data; // Pass ownership to the caller.
   return dest_mgr.size;
+}
+
+}  // namespace
+
+extern "C" size_t EPDF_JPEG_EncodeRGBA(uint8_t* rgba,
+                                       int width,
+                                       int height,
+                                       int stride,
+                                       int quality,
+                                       uint8_t** out_ptr) {
+  return EPDF_JPEG_EncodeCommon(rgba, width, height, stride, quality, 4, JCS_EXT_RGBX, out_ptr);
+}
+
+extern "C" size_t EPDF_JPEG_EncodeBGRA(uint8_t* bgra,
+                                       int width,
+                                       int height,
+                                       int stride,
+                                       int quality,
+                                       uint8_t** out_ptr) {
+  return EPDF_JPEG_EncodeCommon(bgra, width, height, stride, quality, 4, JCS_EXT_BGRX, out_ptr);
+}
+
+extern "C" size_t EPDF_JPEG_EncodeBitmap(FPDF_BITMAP bitmap,
+                                         int quality,
+                                         uint8_t** out_ptr) {
+  if (!bitmap || !out_ptr)
+    return 0;
+  *out_ptr = nullptr;
+
+  int format = FPDFBitmap_GetFormat(bitmap);
+  int width = FPDFBitmap_GetWidth(bitmap);
+  int height = FPDFBitmap_GetHeight(bitmap);
+  int stride = FPDFBitmap_GetStride(bitmap);
+  uint8_t* buffer = static_cast<uint8_t*>(FPDFBitmap_GetBuffer(bitmap));
+
+  if (width <= 0 || height <= 0 || stride <= 0 || !buffer)
+    return 0;
+
+  int input_components = 0;
+  J_COLOR_SPACE color_space = JCS_UNKNOWN;
+
+  if (format == 1) { // FPDFBitmap_Gray
+    input_components = 1;
+    color_space = JCS_GRAYSCALE;
+  } else if (format == 2) { // FPDFBitmap_BGR
+    input_components = 3;
+    color_space = JCS_EXT_BGR;
+  } else if (format == 3) { // FPDFBitmap_BGRx
+    input_components = 4;
+    color_space = JCS_EXT_BGRX;
+  } else if (format == 4) { // FPDFBitmap_BGRA
+    input_components = 4;
+    color_space = JCS_EXT_BGRX;
+  } else {
+    // Unsupported formats (e.g. palette formats)
+    return 0;
+  }
+
+  return EPDF_JPEG_EncodeCommon(buffer, width, height, stride, quality, input_components, color_space, out_ptr);
 }
