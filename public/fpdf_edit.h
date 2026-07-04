@@ -253,6 +253,34 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFPage_HasTransparency(FPDF_PAGE page);
 // |FPDFPage_GenerateContent| or any changes to |page| will be lost.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFPage_GenerateContent(FPDF_PAGE page);
 
+// Experimental EmbedPDF API.
+//
+// Appends an isolated vector probe content stream to a page without using
+// FPDFPage_GenerateContent() and without creating annotations. The resulting
+// /Contents value is rewritten as an array:
+//   [q_wrapper, ...original_content_stream_refs, Q_wrapper, probe_stream]
+//
+// Existing content stream objects are not modified. Existing /Contents entries
+// must be absent, an indirect stream reference, or an array of indirect stream
+// references. Pages with direct content streams or non-stream /Contents entries
+// are rejected.
+//
+// The probe bytes must use only resource-free content stream operators. This
+// API is intended for research validation of object-layer native overlay, not
+// for production text/font/image watermarking.
+//
+//   document    - handle to document that owns |page|.
+//   page        - handle to a page.
+//   stream_data - pointer to raw PDF content stream bytes.
+//   stream_size - size of |stream_data| in bytes.
+//
+// Returns TRUE on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendIsolatedVectorProbe(FPDF_DOCUMENT document,
+                                   FPDF_PAGE page,
+                                   const uint8_t* stream_data,
+                                   unsigned long stream_size);
+
 // Destroy |page_object| by releasing its resources. |page_object| must have
 // been created by FPDFPageObj_CreateNew{Path|Rect}() or
 // FPDFPageObj_New{Text|Image}Obj(). This function must be called on

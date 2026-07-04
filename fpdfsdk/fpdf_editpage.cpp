@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <sstream>
 #include <utility>
 #include <vector>
 
@@ -29,6 +30,8 @@
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_reference.h"
+#include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfapi/render/cpdf_docrenderdata.h"
 #include "core/fpdfdoc/cpdf_annot.h"
@@ -36,6 +39,7 @@
 #include "core/fxcrt/compiler_specific.h"
 #include "core/fxcrt/fx_extension.h"
 #include "core/fxcrt/fx_memcpy_wrappers.h"
+#include "core/fxcrt/fx_string_wrappers.h"
 #include "core/fxcrt/notreached.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxcrt/span.h"
@@ -153,6 +157,70 @@ const CPDF_PageObjectHolder* CPDFPageObjHolderFromFPDFFormObject(
     FPDF_PAGEOBJECT page_object) {
   CPDF_FormObject* pFormObject = CPDFFormObjectFromFPDFPageObject(page_object);
   return pFormObject ? pFormObject->form() : nullptr;
+}
+
+RetainPtr<CPDF_Stream> NewContentStream(CPDF_Document* doc,
+                                        ByteStringView bytes) {
+  return doc->NewIndirect<CPDF_Stream>(bytes.unsigned_span());
+}
+
+RetainPtr<CPDF_Stream> NewWrappedContentStream(CPDF_Document* doc,
+                                               const uint8_t* data,
+                                               unsigned long size) {
+  fxcrt::ostringstream buf;
+  buf << "q\n";
+  if (size > 0) {
+    // SAFETY: the public API contract requires `data` to point to `size` bytes.
+    UNSAFE_BUFFERS(buf.write(reinterpret_cast<const char*>(data),
+                             pdfium::checked_cast<std::streamsize>(size)));
+  }
+  buf << "\nQ\n";
+  return doc->NewIndirect<CPDF_Stream>(&buf);
+}
+
+bool CollectContentArrayRefs(RetainPtr<CPDF_Array> array,
+                             std::vector<uint32_t>* object_numbers) {
+  for (size_t i = 0; i < array->size(); ++i) {
+    RetainPtr<CPDF_Reference> reference =
+        ToReference(array->GetMutableObjectAt(i));
+    if (!reference) {
+      return false;
+    }
+    RetainPtr<CPDF_Object> direct = reference->GetMutableDirect();
+    if (!direct || !direct->IsStream()) {
+      return false;
+    }
+    object_numbers->push_back(reference->GetRefObjNum());
+  }
+  return true;
+}
+
+bool CollectOriginalContentRefs(RetainPtr<CPDF_Object> contents,
+                                std::vector<uint32_t>* object_numbers) {
+  if (!contents) {
+    return true;
+  }
+
+  if (RetainPtr<CPDF_Reference> reference = ToReference(contents)) {
+    RetainPtr<CPDF_Object> direct = reference->GetMutableDirect();
+    if (!direct) {
+      return false;
+    }
+    if (direct->IsStream()) {
+      object_numbers->push_back(reference->GetRefObjNum());
+      return true;
+    }
+    if (RetainPtr<CPDF_Array> array = ToArray(direct)) {
+      return CollectContentArrayRefs(array, object_numbers);
+    }
+    return false;
+  }
+
+  if (RetainPtr<CPDF_Array> array = ToArray(contents)) {
+    return CollectContentArrayRefs(array, object_numbers);
+  }
+
+  return false;
 }
 
 }  // namespace
@@ -728,6 +796,50 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDFPage_GenerateContent(FPDF_PAGE page) {
 
   CPDF_PageContentGenerator CG(pPage);
   CG.GenerateContent();
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendIsolatedVectorProbe(FPDF_DOCUMENT document,
+                                   FPDF_PAGE page,
+                                   const uint8_t* stream_data,
+                                   unsigned long stream_size) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page);
+  if (!doc || !IsPageObject(pdf_page) || pdf_page->GetDocument() != doc) {
+    return false;
+  }
+  if (!stream_data || stream_size == 0) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> page_dict = pdf_page->GetMutableDict();
+  if (!page_dict) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Object> old_contents =
+      page_dict->GetMutableObjectFor(pdfium::page_object::kContents);
+  std::vector<uint32_t> old_content_object_numbers;
+  if (!CollectOriginalContentRefs(old_contents, &old_content_object_numbers)) {
+    return false;
+  }
+
+  auto contents_array = doc->NewIndirect<CPDF_Array>();
+  RetainPtr<CPDF_Stream> q_stream = NewContentStream(doc, ByteStringView("q\n"));
+  RetainPtr<CPDF_Stream> restore_stream =
+      NewContentStream(doc, ByteStringView("Q\n"));
+  RetainPtr<CPDF_Stream> probe_stream =
+      NewWrappedContentStream(doc, stream_data, stream_size);
+
+  contents_array->AppendNew<CPDF_Reference>(doc, q_stream->GetObjNum());
+  for (uint32_t object_number : old_content_object_numbers) {
+    contents_array->AppendNew<CPDF_Reference>(doc, object_number);
+  }
+  contents_array->AppendNew<CPDF_Reference>(doc, restore_stream->GetObjNum());
+  contents_array->AppendNew<CPDF_Reference>(doc, probe_stream->GetObjNum());
+  page_dict->SetNewFor<CPDF_Reference>(pdfium::page_object::kContents, doc,
+                                       contents_array->GetObjNum());
   return true;
 }
 
