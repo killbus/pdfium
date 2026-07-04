@@ -254,23 +254,20 @@ void CPDF_Creator::InitNewObjNumOffsets() {
       continue;
     }
 
-    // ARCHITECTURAL REFINEMENT FOR O(1) SIGNING:
-    // In incremental mode where we aren't copying the original (is_incremental_ && !is_original_),
-    // we must treat any modified "old" object as a "new" object for this revision.
+    // Incremental saves append a new revision containing only objects that
+    // changed in memory. Treat dirty old objects and newly allocated indirect
+    // objects as "new" objects for this revision.
     // This ensures:
     // 1. It gets written by WriteNewObjs.
     // 2. It gets a valid XRef entry in WriteDoc_Stage3 (Incremental branch).
-    if (is_incremental_ && !is_original_) {
+    if (is_incremental_) {
       // SYSTEMATIC DIRTY TRACKING:
-      // In incremental O(1) mode, we only write objects that have been
-      // explicitly marked as dirty (data modified) or are completely new.
+      // In incremental mode, only write objects that have been explicitly
+      // marked as dirty. New indirect objects are dirty when added, and old
+      // objects modified in this revision are marked dirty by their mutators.
       if (pair.second->IsDirty()) {
         new_obj_num_array_.push_back(objnum);
       }
-      continue;
-    }
-
-    if (is_incremental_) {
       continue;
     }
     if (parser_ && parser_->IsValidObjectNumber(objnum) &&
