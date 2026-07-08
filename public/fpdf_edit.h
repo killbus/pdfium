@@ -379,6 +379,64 @@ EPDFPage_AppendIsolatedTextProbeWithStandardFont(FPDF_DOCUMENT document,
                                                  float font_size,
                                                  float alpha);
 
+// Experimental EmbedPDF API.
+//
+// Appends an isolated image probe content stream that references a newly
+// created page-local ExtGState resource and a newly created page-local Image
+// XObject resource. This validates native image/XObject resource materialization
+// without using FPDFPage_GenerateContent() and without creating annotations.
+//
+// The API materializes page-local /Resources, adds /Resources/ExtGState and
+// /Resources/XObject entries as needed, allocates collision-free names in the
+// /GS* and /Im* namespaces, creates a raw DeviceRGB Image XObject stream, and
+// appends a stream containing:
+//   q
+//   /<allocatedGsName> gs
+//   <draw_width> 0 0 <draw_height> <x> <y> cm
+//   /<allocatedImageName> Do
+//   Q
+//
+// Existing content stream objects are not modified. Existing /Contents entries
+// must be absent, an indirect stream reference, or an array of indirect stream
+// references. Pages with direct content streams or non-stream /Contents entries
+// are rejected.
+//
+// This is a D5 image/XObject resources-gate probe, not a production watermark
+// API. PNG/JPEG ingestion, image decoding, per-pixel alpha, ICC color spaces,
+// rotation, tiling, and app-level layout are intentionally out of scope.
+//
+// After a successful call, callers that need to render or inspect the updated
+// page through page-object APIs should close and reload the FPDF_PAGE. This API
+// updates the PDF object graph but does not refresh the current page object's
+// parsed content cache.
+//
+//   document     - handle to document that owns |page|.
+//   page         - handle to a page.
+//   rgb_data     - pointer to raw RGB bytes.
+//   rgb_size     - size of |rgb_data| in bytes. Must equal
+//                  |image_width| * |image_height| * 3 and fit in int range.
+//   image_width  - positive image width in pixels.
+//   image_height - positive image height in pixels.
+//   x            - image matrix x translation.
+//   y            - image matrix y translation.
+//   draw_width   - positive drawn image width in page units.
+//   draw_height  - positive drawn image height in page units.
+//   alpha        - stroke/fill alpha in [0.0, 1.0].
+//
+// Returns TRUE on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendIsolatedImageProbeWithXObject(FPDF_DOCUMENT document,
+                                             FPDF_PAGE page,
+                                             const uint8_t* rgb_data,
+                                             unsigned long rgb_size,
+                                             int image_width,
+                                             int image_height,
+                                             float x,
+                                             float y,
+                                             float draw_width,
+                                             float draw_height,
+                                             float alpha);
+
 // Destroy |page_object| by releasing its resources. |page_object| must have
 // been created by FPDFPageObj_CreateNew{Path|Rect}() or
 // FPDFPageObj_New{Text|Image}Obj(). This function must be called on

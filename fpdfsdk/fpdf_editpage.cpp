@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <utility>
@@ -193,6 +194,49 @@ RetainPtr<CPDF_Dictionary> NewExtGState(CPDF_Document* doc, float alpha) {
 }
 
 
+
+bool IsValidRawDeviceRgbSize(int image_width,
+                             int image_height,
+                             unsigned long rgb_size) {
+  if (image_width <= 0 || image_height <= 0) {
+    return false;
+  }
+
+  const uint64_t width = static_cast<uint64_t>(image_width);
+  const uint64_t height = static_cast<uint64_t>(image_height);
+  const uint64_t max_stream_length =
+      static_cast<uint64_t>(std::numeric_limits<int>::max());
+  if (width > max_stream_length / height) {
+    return false;
+  }
+
+  const uint64_t pixels = width * height;
+  if (pixels > max_stream_length / 3) {
+    return false;
+  }
+
+  return pixels * 3 == static_cast<uint64_t>(rgb_size);
+}
+
+RetainPtr<CPDF_Stream> NewRawDeviceRgbImageXObject(CPDF_Document* doc,
+                                                   const uint8_t* rgb_data,
+                                                   unsigned long rgb_size,
+                                                   int image_width,
+                                                   int image_height) {
+  auto image_dict = doc->New<CPDF_Dictionary>();
+  image_dict->SetNewFor<CPDF_Name>("Type", "XObject");
+  image_dict->SetNewFor<CPDF_Name>("Subtype", "Image");
+  image_dict->SetNewFor<CPDF_Number>("Width", image_width);
+  image_dict->SetNewFor<CPDF_Number>("Height", image_height);
+  image_dict->SetNewFor<CPDF_Name>("ColorSpace", "DeviceRGB");
+  image_dict->SetNewFor<CPDF_Number>("BitsPerComponent", 8);
+
+  pdfium::span<const uint8_t> rgb_span =
+      UNSAFE_BUFFERS(pdfium::span(rgb_data, rgb_size));
+  DataVector<uint8_t> data(rgb_span.begin(), rgb_span.end());
+  return doc->NewIndirect<CPDF_Stream>(std::move(data), std::move(image_dict));
+}
+
 RetainPtr<CPDF_Dictionary> NewStandardHelveticaFont(CPDF_Document* doc) {
   auto font = doc->NewIndirect<CPDF_Dictionary>();
   font->SetNewFor<CPDF_Name>("Type", "Font");
@@ -260,6 +304,27 @@ RetainPtr<CPDF_Stream> NewWrappedTextProbeContentStream(
   WriteFloat(buf, y) << " Tm\n1 0 0 rg\n(";
   buf << ByteString(escaped_text);
   buf << ") Tj\nET\nQ\n";
+  return doc->NewIndirect<CPDF_Stream>(&buf);
+}
+
+RetainPtr<CPDF_Stream> NewWrappedImageProbeContentStream(
+    CPDF_Document* doc,
+    ByteStringView gs_name,
+    ByteStringView image_name,
+    float x,
+    float y,
+    float draw_width,
+    float draw_height) {
+  fxcrt::ostringstream buf;
+  buf << "q\n/";
+  buf << ByteString(gs_name);
+  buf << " gs\n";
+  WriteFloat(buf, draw_width) << " 0 0 ";
+  WriteFloat(buf, draw_height) << " ";
+  WriteFloat(buf, x) << " ";
+  WriteFloat(buf, y) << " cm\n/";
+  buf << ByteString(image_name);
+  buf << " Do\nQ\n";
   return doc->NewIndirect<CPDF_Stream>(&buf);
 }
 
@@ -1080,6 +1145,88 @@ EPDFPage_AppendIsolatedTextProbeWithStandardFont(FPDF_DOCUMENT document,
         return NewWrappedTextProbeContentStream(
             doc, gs_name.AsStringView(), font_name.AsStringView(),
             escaped_text.AsStringView(), x, y, font_size);
+      });
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendIsolatedImageProbeWithXObject(FPDF_DOCUMENT document,
+                                             FPDF_PAGE page,
+                                             const uint8_t* rgb_data,
+                                             unsigned long rgb_size,
+                                             int image_width,
+                                             int image_height,
+                                             float x,
+                                             float y,
+                                             float draw_width,
+                                             float draw_height,
+                                             float alpha) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page);
+  if (!doc || !IsPageObject(pdf_page) || pdf_page->GetDocument() != doc) {
+    return false;
+  }
+  if (!rgb_data ||
+      !IsValidRawDeviceRgbSize(image_width, image_height, rgb_size) ||
+      !std::isfinite(x) || !std::isfinite(y) ||
+      !std::isfinite(draw_width) || !std::isfinite(draw_height) ||
+      !std::isfinite(alpha) || draw_width <= 0.0f ||
+      draw_height <= 0.0f || alpha < 0.0f || alpha > 1.0f) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> page_dict = pdf_page->GetMutableDict();
+  if (!page_dict) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Object> old_contents =
+      page_dict->GetMutableObjectFor(pdfium::page_object::kContents);
+  std::vector<uint32_t> old_content_object_numbers;
+  if (!CollectOriginalContentRefs(old_contents, &old_content_object_numbers)) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> resources =
+      CPDF_PageResourceEditor::EnsurePageLocalResources(doc, pdf_page);
+  if (!resources) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> ext_gstate_resources =
+      CPDF_PageResourceEditor::EnsureLocalResourceSubdict(doc, resources,
+                                                          "ExtGState");
+  RetainPtr<CPDF_Dictionary> xobject_resources =
+      CPDF_PageResourceEditor::EnsureLocalResourceSubdict(doc, resources,
+                                                          "XObject");
+  if (!ext_gstate_resources || !xobject_resources) {
+    return false;
+  }
+
+  ByteString gs_name =
+      CPDF_PageResourceEditor::AllocateUniqueResourceName(ext_gstate_resources,
+                                                          "GS");
+  ByteString image_name =
+      CPDF_PageResourceEditor::AllocateUniqueResourceName(xobject_resources,
+                                                          "Im");
+  if (gs_name.IsEmpty() || image_name.IsEmpty()) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> ext_gstate = NewExtGState(doc, alpha);
+  ext_gstate_resources->SetNewFor<CPDF_Reference>(gs_name, doc,
+                                                  ext_gstate->GetObjNum());
+
+  RetainPtr<CPDF_Stream> image_xobject = NewRawDeviceRgbImageXObject(
+      doc, rgb_data, rgb_size, image_width, image_height);
+  xobject_resources->SetNewFor<CPDF_Reference>(image_name, doc,
+                                               image_xobject->GetObjNum());
+
+  return ReplacePageContentsWithIsolatedAppendStream(
+      doc, page_dict, old_content_object_numbers,
+      [&]() {
+        return NewWrappedImageProbeContentStream(
+            doc, gs_name.AsStringView(), image_name.AsStringView(), x, y,
+            draw_width, draw_height);
       });
 }
 
