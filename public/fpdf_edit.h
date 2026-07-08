@@ -437,6 +437,43 @@ EPDFPage_AppendIsolatedImageProbeWithXObject(FPDF_DOCUMENT document,
                                              float draw_height,
                                              float alpha);
 
+// Append a raw RGBA image to |page| as a page-local Image XObject with a
+// DeviceGray /SMask alpha image. The inserted content is isolated from existing
+// page contents with an outer q/Q wrapper and uses an ExtGState for whole-image
+// alpha, matching EPDFPage_AppendIsolatedImageProbeWithXObject's structural
+// constraints.
+//
+// This is a D5.1 alpha/SMask substrate probe, not a production watermark API.
+// PNG/JPEG ingestion, image decoding, rotation, tiling, and app-level layout are
+// intentionally out of scope.
+//
+//   document     - handle to document that owns |page|.
+//   page         - handle to a page.
+//   rgba_data    - pointer to raw RGBA bytes.
+//   rgba_size    - size of |rgba_data| in bytes. Must equal
+//                  |image_width| * |image_height| * 4 and fit in int range.
+//   image_width  - positive image width in pixels.
+//   image_height - positive image height in pixels.
+//   x            - image matrix x translation.
+//   y            - image matrix y translation.
+//   draw_width   - positive drawn image width in page units.
+//   draw_height  - positive drawn image height in page units.
+//   alpha        - stroke/fill alpha in [0.0, 1.0].
+//
+// Returns TRUE on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendIsolatedRgbaImageProbeWithXObject(FPDF_DOCUMENT document,
+                                                 FPDF_PAGE page,
+                                                 const uint8_t* rgba_data,
+                                                 unsigned long rgba_size,
+                                                 int image_width,
+                                                 int image_height,
+                                                 float x,
+                                                 float y,
+                                                 float draw_width,
+                                                 float draw_height,
+                                                 float alpha);
+
 // Destroy |page_object| by releasing its resources. |page_object| must have
 // been created by FPDFPageObj_CreateNew{Path|Rect}() or
 // FPDFPageObj_New{Text|Image}Obj(). This function must be called on
