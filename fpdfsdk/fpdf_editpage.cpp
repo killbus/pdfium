@@ -7,6 +7,7 @@
 #include "public/fpdf_edit.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -19,6 +20,7 @@
 #include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
 #include "core/fpdfapi/edit/cpdf_page_resource_editor.h"
 #include "core/fpdfapi/edit/cpdf_pagecontentgenerator.h"
+#include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/page/cpdf_colorspace.h"
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
 #include "core/fpdfapi/page/cpdf_form.h"
@@ -39,6 +41,7 @@
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
+#include "core/fpdfapi/parser/fpdf_parser_decode.h"
 #include "core/fpdfapi/render/cpdf_docrenderdata.h"
 #include "core/fpdfdoc/cpdf_annot.h"
 #include "core/fpdfdoc/cpdf_annotlist.h"
@@ -375,6 +378,28 @@ RetainPtr<CPDF_Stream> NewWrappedTextProbeContentStream(
   return doc->NewIndirect<CPDF_Stream>(&buf);
 }
 
+RetainPtr<CPDF_Stream> NewWrappedUnicodeTextProbeContentStream(
+    CPDF_Document* doc,
+    ByteStringView gs_name,
+    ByteStringView font_name,
+    ByteStringView encoded_text,
+    float x,
+    float y,
+    float font_size) {
+  fxcrt::ostringstream buf;
+  buf << "q\n/";
+  buf << ByteString(gs_name);
+  buf << " gs\nBT\n/";
+  buf << ByteString(font_name);
+  buf << " ";
+  WriteFloat(buf, font_size) << " Tf\n1 0 0 1 ";
+  WriteFloat(buf, x) << " ";
+  WriteFloat(buf, y) << " Tm\n1 0 0 rg\n";
+  buf << PDF_HexEncodeString(encoded_text);
+  buf << " Tj\nET\nQ\n";
+  return doc->NewIndirect<CPDF_Stream>(&buf);
+}
+
 RetainPtr<CPDF_Stream> NewWrappedImageProbeContentStream(
     CPDF_Document* doc,
     ByteStringView gs_name,
@@ -394,6 +419,23 @@ RetainPtr<CPDF_Stream> NewWrappedImageProbeContentStream(
   buf << ByteString(image_name);
   buf << " Do\nQ\n";
   return doc->NewIndirect<CPDF_Stream>(&buf);
+}
+
+bool EncodeUnicodeTextWithFont(const WideString& wide_text,
+                               CPDF_Font* font,
+                               ByteString* encoded_text) {
+  if (wide_text.IsEmpty() || !font || !encoded_text) {
+    return false;
+  }
+
+  for (wchar_t wc : wide_text) {
+    const uint32_t charcode = font->CharCodeFromUnicode(wc);
+    if (charcode == 0) {
+      return false;
+    }
+    font->AppendChar(encoded_text, charcode);
+  }
+  return !encoded_text->IsEmpty();
 }
 
 bool CollectContentArrayRefs(RetainPtr<CPDF_Array> array,
@@ -1214,6 +1256,117 @@ EPDFPage_AppendIsolatedTextProbeWithStandardFont(FPDF_DOCUMENT document,
             doc, gs_name.AsStringView(), font_name.AsStringView(),
             escaped_text.AsStringView(), x, y, font_size);
       });
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendIsolatedUnicodeTextProbeWithEmbeddedFont(
+    FPDF_DOCUMENT document,
+    FPDF_PAGE page,
+    const uint8_t* font_data,
+    uint32_t font_data_size,
+    FPDF_WIDESTRING text,
+    float x,
+    float y,
+    float font_size,
+    float alpha) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page);
+  if (!doc || !IsPageObject(pdf_page) || pdf_page->GetDocument() != doc) {
+    return false;
+  }
+  if (!font_data || font_data_size == 0 || !text || !std::isfinite(x) ||
+      !std::isfinite(y) || !std::isfinite(font_size) ||
+      !std::isfinite(alpha) || font_size <= 0.0f || alpha < 0.0f ||
+      alpha > 1.0f) {
+    return false;
+  }
+
+  // SAFETY: The public API contract requires `text` to be NUL-terminated.
+  WideString wide_text = UNSAFE_BUFFERS(WideStringFromFPDFWideString(text));
+  if (wide_text.IsEmpty()) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> page_dict = pdf_page->GetMutableDict();
+  if (!page_dict) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Object> old_contents =
+      page_dict->GetMutableObjectFor(pdfium::page_object::kContents);
+  std::vector<uint32_t> old_content_object_numbers;
+  if (!CollectOriginalContentRefs(old_contents, &old_content_object_numbers)) {
+    return false;
+  }
+
+  FPDF_FONT font_handle = FPDFText_LoadFont(document, font_data, font_data_size,
+                                            FPDF_FONT_TRUETYPE, /*cid=*/true);
+  if (!font_handle) {
+    return false;
+  }
+
+  CPDF_Font* font = CPDFFontFromFPDFFont(font_handle);
+  if (!font) {
+    FPDFFont_Close(font_handle);
+    return false;
+  }
+
+  ByteString encoded_text;
+  if (!EncodeUnicodeTextWithFont(wide_text, font, &encoded_text)) {
+    FPDFFont_Close(font_handle);
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> font_dict = font->GetMutableFontDict();
+  if (!font_dict) {
+    FPDFFont_Close(font_handle);
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> resources =
+      CPDF_PageResourceEditor::EnsurePageLocalResources(doc, pdf_page);
+  if (!resources) {
+    FPDFFont_Close(font_handle);
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> ext_gstate_resources =
+      CPDF_PageResourceEditor::EnsureLocalResourceSubdict(doc, resources,
+                                                          "ExtGState");
+  RetainPtr<CPDF_Dictionary> font_resources =
+      CPDF_PageResourceEditor::EnsureLocalResourceSubdict(doc, resources,
+                                                          "Font");
+  if (!ext_gstate_resources || !font_resources) {
+    FPDFFont_Close(font_handle);
+    return false;
+  }
+
+  ByteString gs_name =
+      CPDF_PageResourceEditor::AllocateUniqueResourceName(ext_gstate_resources,
+                                                          "GS");
+  ByteString font_name =
+      CPDF_PageResourceEditor::AllocateUniqueResourceName(font_resources, "F");
+  if (gs_name.IsEmpty() || font_name.IsEmpty() || font_dict->GetObjNum() == 0) {
+    FPDFFont_Close(font_handle);
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> ext_gstate = NewExtGState(doc, alpha);
+  ext_gstate_resources->SetNewFor<CPDF_Reference>(gs_name, doc,
+                                                  ext_gstate->GetObjNum());
+  font_resources->SetNewFor<CPDF_Reference>(font_name, doc,
+                                            font_dict->GetObjNum());
+
+  bool append_result = ReplacePageContentsWithIsolatedAppendStream(
+      doc, page_dict, old_content_object_numbers,
+      [&]() {
+        return NewWrappedUnicodeTextProbeContentStream(
+            doc, gs_name.AsStringView(), font_name.AsStringView(),
+            encoded_text.AsStringView(), x, y, font_size);
+      });
+
+  FPDFFont_Close(font_handle);
+  return append_result;
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV

@@ -381,6 +381,65 @@ EPDFPage_AppendIsolatedTextProbeWithStandardFont(FPDF_DOCUMENT document,
 
 // Experimental EmbedPDF API.
 //
+// Appends an isolated Unicode text probe content stream that references a newly
+// created page-local ExtGState resource and a newly loaded page-local embedded
+// CID TrueType font resource. This validates native Unicode text/font resource
+// materialization without using FPDFPage_GenerateContent() and without creating
+// annotations.
+//
+// The API loads |font_data| through FPDFText_LoadFont() as
+// FPDF_FONT_TRUETYPE with cid=true, encodes |text| from UTF-16LE through the
+// loaded CPDF_Font's CharCodeFromUnicode()/AppendChar() path, rejects unmapped
+// characters, and appends a stream containing:
+//   q
+//   /<allocatedGsName> gs
+//   BT
+//   /<allocatedFontName> <font_size> Tf
+//   1 0 0 1 <x> <y> Tm
+//   1 0 0 rg
+//   <hex-encoded font bytes> Tj
+//   ET
+//   Q
+//
+// Existing content stream objects are not modified. Existing /Contents entries
+// must be absent, an indirect stream reference, or an array of indirect stream
+// references. Pages with direct content streams or non-stream /Contents entries
+// are rejected.
+//
+// This is a D6 Unicode/embedded-font resources-gate probe, not a production
+// watermark API. Complex shaping, bidi, vertical writing, font fallback,
+// subsetting, rotation, and layout are intentionally out of scope.
+//
+// After a successful call, callers that need to render or inspect the updated
+// page through page-object APIs should close and reload the FPDF_PAGE. This API
+// updates the PDF object graph but does not refresh the current page object's
+// parsed content cache.
+//
+//   document       - handle to document that owns |page|.
+//   page           - handle to a page.
+//   font_data      - pointer to embedded TrueType/OpenType font bytes.
+//   font_data_size - size of |font_data| in bytes.
+//   text           - NUL-terminated UTF-16LE text.
+//   x              - text matrix x translation.
+//   y              - text matrix y translation.
+//   font_size      - positive text font size.
+//   alpha          - stroke/fill alpha in [0.0, 1.0].
+//
+// Returns TRUE on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendIsolatedUnicodeTextProbeWithEmbeddedFont(
+    FPDF_DOCUMENT document,
+    FPDF_PAGE page,
+    const uint8_t* font_data,
+    uint32_t font_data_size,
+    FPDF_WIDESTRING text,
+    float x,
+    float y,
+    float font_size,
+    float alpha);
+
+// Experimental EmbedPDF API.
+//
 // Appends an isolated image probe content stream that references a newly
 // created page-local ExtGState resource and a newly created page-local Image
 // XObject resource. This validates native image/XObject resource materialization

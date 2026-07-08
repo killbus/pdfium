@@ -168,6 +168,7 @@ int CheckPDFiumCApi() {
     CHK(EPDFPage_AppendIsolatedImageProbeWithXObject);
     CHK(EPDFPage_AppendIsolatedRgbaImageProbeWithXObject);
     CHK(EPDFPage_AppendIsolatedTextProbeWithStandardFont);
+    CHK(EPDFPage_AppendIsolatedUnicodeTextProbeWithEmbeddedFont);
     CHK(EPDFPage_AppendIsolatedVectorProbe);
     CHK(EPDFPage_AppendIsolatedVectorProbeWithExtGState);
     CHK(FPDFFont_Close);
