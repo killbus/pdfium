@@ -494,6 +494,58 @@ EPDFPage_AppendIsolatedUnicodeTextObjectProbeWithEmbeddedFont(
 
 // Experimental EmbedPDF API.
 //
+// Appends one reusable Form XObject stamp containing native Unicode text-object
+// content, then places that same Form XObject |placement_count| times on
+// |page| through one page-local /Resources/XObject name.
+//
+// Existing content stream objects are not modified. Existing /Contents entries
+// must be absent, an indirect stream reference, or an array of indirect stream
+// references. Pages with direct content streams or non-stream /Contents entries
+// are rejected.
+//
+// This API does not own product layout policy. Callers provide explicit
+// FS_MATRIX placement values. Each placement matrix must be finite and have a
+// non-zero determinant. |placements| must be non-NULL and |placement_count|
+// must be greater than zero.
+//
+// After a successful call, callers that need to render or inspect the updated
+// page through page-object APIs should close and reload the FPDF_PAGE. This API
+// updates the PDF object graph but does not refresh the current page object's
+// parsed content cache.
+//
+//   document        - handle to document that owns |page|.
+//   page            - handle to a page.
+//   font_data       - pointer to embedded TrueType/OpenType font bytes.
+//   font_data_size  - size of |font_data| in bytes.
+//   text            - NUL-terminated UTF-16LE text.
+//   stamp_width     - positive Form XObject BBox width.
+//   stamp_height    - positive Form XObject BBox height.
+//   text_x          - text matrix x translation inside the Form.
+//   text_y          - text matrix y translation inside the Form.
+//   font_size       - positive text font size.
+//   placements      - array of page placement matrices.
+//   placement_count - number of entries in |placements|.
+//   alpha           - fill/stroke alpha in [0.0, 1.0].
+//
+// Returns TRUE on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendReusableUnicodeTextStampXObjectProbe(
+    FPDF_DOCUMENT document,
+    FPDF_PAGE page,
+    const uint8_t* font_data,
+    uint32_t font_data_size,
+    FPDF_WIDESTRING text,
+    float stamp_width,
+    float stamp_height,
+    float text_x,
+    float text_y,
+    float font_size,
+    const FS_MATRIX* placements,
+    uint32_t placement_count,
+    float alpha);
+
+// Experimental EmbedPDF API.
+//
 // Appends an isolated image probe content stream that references a newly
 // created page-local ExtGState resource and a newly created page-local Image
 // XObject resource. This validates native image/XObject resource materialization
