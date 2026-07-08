@@ -281,6 +281,48 @@ EPDFPage_AppendIsolatedVectorProbe(FPDF_DOCUMENT document,
                                    const uint8_t* stream_data,
                                    unsigned long stream_size);
 
+// Experimental EmbedPDF API.
+//
+// Appends an isolated vector probe content stream that references a newly
+// created page-local ExtGState resource. This validates resource materialization
+// for native page content stream append without using FPDFPage_GenerateContent()
+// and without creating annotations.
+//
+// The API materializes page-local /Resources, adds an /ExtGState resource with
+// /CA and /ca set to |alpha|, allocates a collision-free resource name within
+// the /Resources/ExtGState namespace, and appends a stream containing:
+//   q
+//   /<allocatedName> gs
+//   <stream_data>
+//   Q
+//
+// Existing content stream objects are not modified. Existing /Contents entries
+// must be absent, an indirect stream reference, or an array of indirect stream
+// references. Pages with direct content streams or non-stream /Contents entries
+// are rejected.
+//
+// The probe bytes must use only resource-free content stream operators. This is
+// a D3 resources-gate probe, not a production text/font/image watermark API.
+//
+// After a successful call, callers that need to render or inspect the updated
+// page through page-object APIs should close and reload the FPDF_PAGE. This API
+// updates the PDF object graph but does not refresh the current page object's
+// parsed content cache.
+//
+//   document    - handle to document that owns |page|.
+//   page        - handle to a page.
+//   stream_data - pointer to raw resource-free PDF content stream bytes.
+//   stream_size - size of |stream_data| in bytes.
+//   alpha       - stroke/fill alpha in [0.0, 1.0].
+//
+// Returns TRUE on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendIsolatedVectorProbeWithExtGState(FPDF_DOCUMENT document,
+                                                FPDF_PAGE page,
+                                                const uint8_t* stream_data,
+                                                unsigned long stream_size,
+                                                float alpha);
+
 // Destroy |page_object| by releasing its resources. |page_object| must have
 // been created by FPDFPageObj_CreateNew{Path|Rect}() or
 // FPDFPageObj_New{Text|Image}Obj(). This function must be called on

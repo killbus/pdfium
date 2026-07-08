@@ -24,6 +24,8 @@ def _IsValidFunctionName(function, filename):
     return True
   if function.startswith('FORM_') and filename == 'fpdf_formfill.h':
     return True
+  if function.startswith('EPDF'):
+    return True
   return False
 
 
@@ -36,7 +38,7 @@ def _FindFunction(function_snippet, filename):
 
 
 def _GetExportsFromHeader(dirname, filename):
-  with open(os.path.join(dirname, filename)) as f:
+  with open(os.path.join(dirname, filename), encoding='utf-8') as f:
     contents = f.readlines()
     look_for_function_name = False
     functions = []
@@ -81,9 +83,9 @@ def _CheckSorted(functions):
 
 
 def _GetFunctionsFromTest(api_test_path):
-  chk_regex = re.compile('^    CHK\((.*)\);\n$')
-  file_regex = re.compile('^    //.*\.h\n$')
-  with open(api_test_path) as f:
+  chk_regex = re.compile(r'^    CHK\((.*)\);\n$')
+  file_regex = re.compile(r'^    //.*\.h\n$')
+  with open(api_test_path, encoding='utf-8') as f:
     contents = f.readlines()
     functions = []
     functions_in_file = []

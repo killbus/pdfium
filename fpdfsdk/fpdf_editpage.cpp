@@ -7,12 +7,15 @@
 #include "public/fpdf_edit.h"
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <sstream>
 #include <utility>
 #include <vector>
 
 #include "constants/page_object.h"
+#include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
+#include "core/fpdfapi/edit/cpdf_page_resource_editor.h"
 #include "core/fpdfapi/edit/cpdf_pagecontentgenerator.h"
 #include "core/fpdfapi/page/cpdf_colorspace.h"
 #include "core/fpdfapi/page/cpdf_docpagedata.h"
@@ -30,6 +33,7 @@
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_object.h"
 #include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
@@ -178,6 +182,32 @@ RetainPtr<CPDF_Stream> NewWrappedContentStream(CPDF_Document* doc,
   return doc->NewIndirect<CPDF_Stream>(&buf);
 }
 
+RetainPtr<CPDF_Dictionary> NewExtGState(CPDF_Document* doc, float alpha) {
+  auto ext_gstate = doc->NewIndirect<CPDF_Dictionary>();
+  ext_gstate->SetNewFor<CPDF_Name>("Type", "ExtGState");
+  ext_gstate->SetNewFor<CPDF_Number>("CA", alpha);
+  ext_gstate->SetNewFor<CPDF_Number>("ca", alpha);
+  return ext_gstate;
+}
+
+RetainPtr<CPDF_Stream> NewWrappedExtGStateContentStream(
+    CPDF_Document* doc,
+    ByteStringView resource_name,
+    const uint8_t* data,
+    unsigned long size) {
+  fxcrt::ostringstream buf;
+  buf << "q\n/";
+  buf << ByteString(resource_name);
+  buf << " gs\n";
+  if (size > 0) {
+    // SAFETY: the public API contract requires `data` to point to `size` bytes.
+    UNSAFE_BUFFERS(buf.write(reinterpret_cast<const char*>(data),
+                             pdfium::checked_cast<std::streamsize>(size)));
+  }
+  buf << "\nQ\n";
+  return doc->NewIndirect<CPDF_Stream>(&buf);
+}
+
 bool CollectContentArrayRefs(RetainPtr<CPDF_Array> array,
                              std::vector<uint32_t>* object_numbers) {
   for (size_t i = 0; i < array->size(); ++i) {
@@ -221,6 +251,33 @@ bool CollectOriginalContentRefs(RetainPtr<CPDF_Object> contents,
   }
 
   return false;
+}
+
+template <typename AppendStreamFactory>
+bool ReplacePageContentsWithIsolatedAppendStream(
+    CPDF_Document* doc,
+    RetainPtr<CPDF_Dictionary> page_dict,
+    const std::vector<uint32_t>& old_content_object_numbers,
+    AppendStreamFactory append_stream_factory) {
+  auto contents_array = doc->NewIndirect<CPDF_Array>();
+  RetainPtr<CPDF_Stream> save_stream =
+      NewContentStream(doc, ByteStringView("q\n"));
+  RetainPtr<CPDF_Stream> restore_stream =
+      NewContentStream(doc, ByteStringView("Q\n"));
+  RetainPtr<CPDF_Stream> append_stream = append_stream_factory();
+  if (!append_stream) {
+    return false;
+  }
+
+  contents_array->AppendNew<CPDF_Reference>(doc, save_stream->GetObjNum());
+  for (uint32_t object_number : old_content_object_numbers) {
+    contents_array->AppendNew<CPDF_Reference>(doc, object_number);
+  }
+  contents_array->AppendNew<CPDF_Reference>(doc, restore_stream->GetObjNum());
+  contents_array->AppendNew<CPDF_Reference>(doc, append_stream->GetObjNum());
+  page_dict->SetNewFor<CPDF_Reference>(pdfium::page_object::kContents, doc,
+                                       contents_array->GetObjNum());
+  return true;
 }
 
 }  // namespace
@@ -825,22 +882,70 @@ EPDFPage_AppendIsolatedVectorProbe(FPDF_DOCUMENT document,
     return false;
   }
 
-  auto contents_array = doc->NewIndirect<CPDF_Array>();
-  RetainPtr<CPDF_Stream> q_stream = NewContentStream(doc, ByteStringView("q\n"));
-  RetainPtr<CPDF_Stream> restore_stream =
-      NewContentStream(doc, ByteStringView("Q\n"));
-  RetainPtr<CPDF_Stream> probe_stream =
-      NewWrappedContentStream(doc, stream_data, stream_size);
+  return ReplacePageContentsWithIsolatedAppendStream(
+      doc, page_dict, old_content_object_numbers,
+      [&]() {
+        return NewWrappedContentStream(doc, stream_data, stream_size);
+      });
+}
 
-  contents_array->AppendNew<CPDF_Reference>(doc, q_stream->GetObjNum());
-  for (uint32_t object_number : old_content_object_numbers) {
-    contents_array->AppendNew<CPDF_Reference>(doc, object_number);
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendIsolatedVectorProbeWithExtGState(FPDF_DOCUMENT document,
+                                                FPDF_PAGE page,
+                                                const uint8_t* stream_data,
+                                                unsigned long stream_size,
+                                                float alpha) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page);
+  if (!doc || !IsPageObject(pdf_page) || pdf_page->GetDocument() != doc) {
+    return false;
   }
-  contents_array->AppendNew<CPDF_Reference>(doc, restore_stream->GetObjNum());
-  contents_array->AppendNew<CPDF_Reference>(doc, probe_stream->GetObjNum());
-  page_dict->SetNewFor<CPDF_Reference>(pdfium::page_object::kContents, doc,
-                                       contents_array->GetObjNum());
-  return true;
+  if (!stream_data || stream_size == 0 || !std::isfinite(alpha) ||
+      alpha < 0.0f || alpha > 1.0f) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> page_dict = pdf_page->GetMutableDict();
+  if (!page_dict) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Object> old_contents =
+      page_dict->GetMutableObjectFor(pdfium::page_object::kContents);
+  std::vector<uint32_t> old_content_object_numbers;
+  if (!CollectOriginalContentRefs(old_contents, &old_content_object_numbers)) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> resources =
+      CPDF_PageResourceEditor::EnsurePageLocalResources(doc, pdf_page);
+  if (!resources) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> ext_gstate_resources =
+      CPDF_PageResourceEditor::EnsureLocalResourceSubdict(doc, resources,
+                                                          "ExtGState");
+  if (!ext_gstate_resources) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> ext_gstate = NewExtGState(doc, alpha);
+  ByteString resource_name =
+      CPDF_PageResourceEditor::AllocateUniqueResourceName(ext_gstate_resources,
+                                                          "GS");
+  if (resource_name.IsEmpty()) {
+    return false;
+  }
+  ext_gstate_resources->SetNewFor<CPDF_Reference>(resource_name, doc,
+                                                  ext_gstate->GetObjNum());
+
+  return ReplacePageContentsWithIsolatedAppendStream(
+      doc, page_dict, old_content_object_numbers,
+      [&]() {
+        return NewWrappedExtGStateContentStream(
+            doc, resource_name.AsStringView(), stream_data, stream_size);
+      });
 }
 
 FPDF_EXPORT void FPDF_CALLCONV

@@ -17,6 +17,7 @@
 #include "constants/page_object.h"
 #include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
 #include "core/fpdfapi/edit/cpdf_pagecontentmanager.h"
+#include "core/fpdfapi/edit/cpdf_page_resource_editor.h"
 #include "core/fpdfapi/edit/cpdf_stringarchivestream.h"
 #include "core/fpdfapi/font/cpdf_truetypefont.h"
 #include "core/fpdfapi/font/cpdf_type1font.h"
@@ -26,7 +27,6 @@
 #include "core/fpdfapi/page/cpdf_formobject.h"
 #include "core/fpdfapi/page/cpdf_image.h"
 #include "core/fpdfapi/page/cpdf_imageobject.h"
-#include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/page/cpdf_path.h"
 #include "core/fpdfapi/page/cpdf_pathobject.h"
 #include "core/fpdfapi/page/cpdf_pattern.h"
@@ -259,58 +259,6 @@ void RemoveOrRestoreUnusedResources(
   }
 }
 
-bool IsPageResourceShared(CPDF_Document* doc,
-                          RetainPtr<const CPDF_Dictionary> page_dict,
-                          RetainPtr<const CPDF_Dictionary> resources_dict) {
-  CHECK(doc);
-  CHECK(page_dict);
-  CHECK(resources_dict);
-
-  const uint32_t resources_object_number = resources_dict->GetObjNum();
-  if (resources_object_number) {
-    // If `resources_dict` is not an inline object, then check to see if is a
-    // shared object.
-    if (pdfium::Contains(GetObjectsWithMultipleReferences(doc),
-                         resources_object_number)) {
-      return true;
-    }
-  }
-
-  // The check above may not catch all cases. e.g. inline objects. Check all
-  // pages in the document to see if another page is using the same resources.
-  int page_dict_seen = 0;
-  int resources_dict_seen = 0;
-  for (int i = 0; i < doc->GetPageCount(); ++i) {
-    RetainPtr<CPDF_Dictionary> current_page_dict =
-        doc->GetMutablePageDictionary(i);
-    if (!current_page_dict) {
-      continue;
-    }
-
-    // Check to see if the current page's page dictionary is seen twice: Once
-    // for this page, and once for another. If the same page dictionary is in
-    // use twice, then the resource dictionary within must also be shared.
-    if (current_page_dict == page_dict) {
-      ++page_dict_seen;
-      if (page_dict_seen == 2) {
-        return true;
-      }
-    }
-
-    // Similar check as above, for the current page's resource dictionary.
-    auto page =
-        pdfium::MakeRetain<CPDF_Page>(doc, std::move(current_page_dict));
-    if (resources_dict == page->GetMutableResources()) {
-      ++resources_dict_seen;
-      if (resources_dict_seen == 2) {
-        return true;
-      }
-    }
-  }
-
-  return false;
-}
-
 void CloneResourcesDictEntries(CPDF_Document* doc,
                                RetainPtr<CPDF_Dictionary> resources_dict) {
   struct KeyAndObject {
@@ -380,6 +328,17 @@ void CPDF_PageContentGenerator::GenerateContent() {
 
   UpdateContentStreams(std::move(new_stream_data));
   UpdateResourcesDict();
+}
+
+ByteString CPDF_PageContentGenerator::GenerateAppendOnlyTextObjectStream(
+    CPDF_TextObject* text_object) {
+  if (!text_object) {
+    return ByteString();
+  }
+
+  fxcrt::ostringstream buf;
+  ProcessText(&buf, text_object);
+  return ByteString(buf);
 }
 
 std::map<int32_t, fxcrt::ostringstream>
@@ -546,7 +505,8 @@ void CPDF_PageContentGenerator::UpdateResourcesDict() {
   }
 
   // Do not modify shared resource dictionaries. Give this page its own copy.
-  if (IsPageResourceShared(document_, obj_holder_->GetDict(), resources)) {
+  if (CPDF_PageResourceEditor::IsPageResourceShared(
+          document_, obj_holder_->GetDict(), resources)) {
     resources = pdfium::WrapRetain(resources->Clone()->AsMutableDictionary());
     const uint32_t clone_object_number =
         document_->AddIndirectObject(resources);
