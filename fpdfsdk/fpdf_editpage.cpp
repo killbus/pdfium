@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "constants/font_encodings.h"
 #include "constants/page_object.h"
 #include "core/fpdfapi/edit/cpdf_contentstream_write_utils.h"
 #include "core/fpdfapi/edit/cpdf_page_resource_editor.h"
@@ -49,6 +50,7 @@
 #include "core/fxcrt/span.h"
 #include "core/fxcrt/span_util.h"
 #include "core/fxcrt/stl_util.h"
+#include "core/fxge/cfx_font.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "public/fpdf_formfill.h"
 
@@ -190,6 +192,37 @@ RetainPtr<CPDF_Dictionary> NewExtGState(CPDF_Document* doc, float alpha) {
   return ext_gstate;
 }
 
+
+RetainPtr<CPDF_Dictionary> NewStandardHelveticaFont(CPDF_Document* doc) {
+  auto font = doc->NewIndirect<CPDF_Dictionary>();
+  font->SetNewFor<CPDF_Name>("Type", "Font");
+  font->SetNewFor<CPDF_Name>("Subtype", "Type1");
+  font->SetNewFor<CPDF_Name>("BaseFont", CFX_Font::kDefaultAnsiFontName);
+  font->SetNewFor<CPDF_Name>("Encoding",
+                             pdfium::font_encodings::kWinAnsiEncoding);
+  return font;
+}
+
+bool EscapeAsciiLiteralString(const char* text,
+                              unsigned long text_size,
+                              ByteString* escaped) {
+  if (!text || text_size == 0 || !escaped) {
+    return false;
+  }
+
+  for (unsigned long i = 0; i < text_size; ++i) {
+    const unsigned char ch = static_cast<unsigned char>(text[i]);
+    if (ch < 0x20 || ch > 0x7e) {
+      return false;
+    }
+    if (ch == '\\' || ch == '(' || ch == ')') {
+      *escaped += '\\';
+    }
+    *escaped += static_cast<char>(ch);
+  }
+  return true;
+}
+
 RetainPtr<CPDF_Stream> NewWrappedExtGStateContentStream(
     CPDF_Document* doc,
     ByteStringView resource_name,
@@ -205,6 +238,28 @@ RetainPtr<CPDF_Stream> NewWrappedExtGStateContentStream(
                              pdfium::checked_cast<std::streamsize>(size)));
   }
   buf << "\nQ\n";
+  return doc->NewIndirect<CPDF_Stream>(&buf);
+}
+
+RetainPtr<CPDF_Stream> NewWrappedTextProbeContentStream(
+    CPDF_Document* doc,
+    ByteStringView gs_name,
+    ByteStringView font_name,
+    ByteStringView escaped_text,
+    float x,
+    float y,
+    float font_size) {
+  fxcrt::ostringstream buf;
+  buf << "q\n/";
+  buf << ByteString(gs_name);
+  buf << " gs\nBT\n/";
+  buf << ByteString(font_name);
+  buf << " ";
+  WriteFloat(buf, font_size) << " Tf\n1 0 0 1 ";
+  WriteFloat(buf, x) << " ";
+  WriteFloat(buf, y) << " Tm\n1 0 0 rg\n(";
+  buf << ByteString(escaped_text);
+  buf << ") Tj\nET\nQ\n";
   return doc->NewIndirect<CPDF_Stream>(&buf);
 }
 
@@ -945,6 +1000,86 @@ EPDFPage_AppendIsolatedVectorProbeWithExtGState(FPDF_DOCUMENT document,
       [&]() {
         return NewWrappedExtGStateContentStream(
             doc, resource_name.AsStringView(), stream_data, stream_size);
+      });
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendIsolatedTextProbeWithStandardFont(FPDF_DOCUMENT document,
+                                                 FPDF_PAGE page,
+                                                 const char* text,
+                                                 unsigned long text_size,
+                                                 float x,
+                                                 float y,
+                                                 float font_size,
+                                                 float alpha) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page);
+  if (!doc || !IsPageObject(pdf_page) || pdf_page->GetDocument() != doc) {
+    return false;
+  }
+  if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(font_size) ||
+      !std::isfinite(alpha) || font_size <= 0.0f || alpha < 0.0f ||
+      alpha > 1.0f) {
+    return false;
+  }
+
+  ByteString escaped_text;
+  if (!EscapeAsciiLiteralString(text, text_size, &escaped_text)) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> page_dict = pdf_page->GetMutableDict();
+  if (!page_dict) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Object> old_contents =
+      page_dict->GetMutableObjectFor(pdfium::page_object::kContents);
+  std::vector<uint32_t> old_content_object_numbers;
+  if (!CollectOriginalContentRefs(old_contents, &old_content_object_numbers)) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> resources =
+      CPDF_PageResourceEditor::EnsurePageLocalResources(doc, pdf_page);
+  if (!resources) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> ext_gstate_resources =
+      CPDF_PageResourceEditor::EnsureLocalResourceSubdict(doc, resources,
+                                                          "ExtGState");
+  RetainPtr<CPDF_Dictionary> font_resources =
+      CPDF_PageResourceEditor::EnsureLocalResourceSubdict(doc, resources,
+                                                          "Font");
+  if (!ext_gstate_resources || !font_resources) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> ext_gstate = NewExtGState(doc, alpha);
+  ByteString gs_name =
+      CPDF_PageResourceEditor::AllocateUniqueResourceName(ext_gstate_resources,
+                                                          "GS");
+  if (gs_name.IsEmpty()) {
+    return false;
+  }
+  ext_gstate_resources->SetNewFor<CPDF_Reference>(gs_name, doc,
+                                                  ext_gstate->GetObjNum());
+
+  RetainPtr<CPDF_Dictionary> font = NewStandardHelveticaFont(doc);
+  ByteString font_name =
+      CPDF_PageResourceEditor::AllocateUniqueResourceName(font_resources, "F");
+  if (font_name.IsEmpty()) {
+    return false;
+  }
+  font_resources->SetNewFor<CPDF_Reference>(font_name, doc, font->GetObjNum());
+
+  return ReplacePageContentsWithIsolatedAppendStream(
+      doc, page_dict, old_content_object_numbers,
+      [&]() {
+        return NewWrappedTextProbeContentStream(
+            doc, gs_name.AsStringView(), font_name.AsStringView(),
+            escaped_text.AsStringView(), x, y, font_size);
       });
 }
 

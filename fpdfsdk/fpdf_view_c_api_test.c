@@ -248,6 +248,7 @@ int CheckPDFiumCApi() {
     CHK(FPDFPage_GenerateContent);
     CHK(EPDFPage_AppendIsolatedVectorProbe);
     CHK(EPDFPage_AppendIsolatedVectorProbeWithExtGState);
+    CHK(EPDFPage_AppendIsolatedTextProbeWithStandardFont);
     CHK(FPDFPage_GetObject);
     CHK(FPDFPage_GetRotation);
     CHK(FPDFPage_HasTransparency);

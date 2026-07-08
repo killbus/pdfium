@@ -323,6 +323,62 @@ EPDFPage_AppendIsolatedVectorProbeWithExtGState(FPDF_DOCUMENT document,
                                                 unsigned long stream_size,
                                                 float alpha);
 
+// Experimental EmbedPDF API.
+//
+// Appends an isolated text probe content stream that references a newly
+// created page-local ExtGState resource and a newly created page-local standard
+// Type1 Helvetica font resource. This validates native text/font resource
+// materialization without using FPDFPage_GenerateContent() and without creating
+// annotations.
+//
+// The API materializes page-local /Resources, adds /Resources/ExtGState and
+// /Resources/Font entries as needed, allocates collision-free names in the
+// /GS* and /F* namespaces, and appends a stream containing:
+//   q
+//   /<allocatedGsName> gs
+//   BT
+//   /<allocatedFontName> <font_size> Tf
+//   1 0 0 1 <x> <y> Tm
+//   1 0 0 rg
+//   (<escaped text>) Tj
+//   ET
+//   Q
+//
+// Existing content stream objects are not modified. Existing /Contents entries
+// must be absent, an indirect stream reference, or an array of indirect stream
+// references. Pages with direct content streams or non-stream /Contents entries
+// are rejected.
+//
+// This is a D4 text/font resources-gate probe, not a production watermark API.
+// Text is limited to printable ASCII bytes, escaped as a PDF literal string,
+// and mapped through WinAnsiEncoding. Unicode, CJK, shaping, font embedding,
+// and layout are intentionally out of scope.
+//
+// After a successful call, callers that need to render or inspect the updated
+// page through page-object APIs should close and reload the FPDF_PAGE. This API
+// updates the PDF object graph but does not refresh the current page object's
+// parsed content cache.
+//
+//   document  - handle to document that owns |page|.
+//   page      - handle to a page.
+//   text      - pointer to printable ASCII text bytes.
+//   text_size - size of |text| in bytes.
+//   x         - text matrix x translation.
+//   y         - text matrix y translation.
+//   font_size - positive text font size.
+//   alpha     - stroke/fill alpha in [0.0, 1.0].
+//
+// Returns TRUE on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendIsolatedTextProbeWithStandardFont(FPDF_DOCUMENT document,
+                                                 FPDF_PAGE page,
+                                                 const char* text,
+                                                 unsigned long text_size,
+                                                 float x,
+                                                 float y,
+                                                 float font_size,
+                                                 float alpha);
+
 // Destroy |page_object| by releasing its resources. |page_object| must have
 // been created by FPDFPageObj_CreateNew{Path|Rect}() or
 // FPDFPageObj_New{Text|Image}Obj(). This function must be called on
