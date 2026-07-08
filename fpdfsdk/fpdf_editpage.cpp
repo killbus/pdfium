@@ -1370,6 +1370,122 @@ EPDFPage_AppendIsolatedUnicodeTextProbeWithEmbeddedFont(
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendIsolatedUnicodeTextObjectProbeWithEmbeddedFont(
+    FPDF_DOCUMENT document,
+    FPDF_PAGE page,
+    const uint8_t* font_data,
+    uint32_t font_data_size,
+    FPDF_WIDESTRING text,
+    float x,
+    float y,
+    float font_size,
+    float rotation_degrees,
+    float alpha) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page);
+  if (!doc || !IsPageObject(pdf_page) || pdf_page->GetDocument() != doc) {
+    return false;
+  }
+  if (!font_data || font_data_size == 0 || !text || !std::isfinite(x) ||
+      !std::isfinite(y) || !std::isfinite(font_size) ||
+      !std::isfinite(rotation_degrees) || !std::isfinite(alpha) ||
+      font_size <= 0.0f || alpha < 0.0f || alpha > 1.0f) {
+    return false;
+  }
+
+  // SAFETY: The public API contract requires `text` to be NUL-terminated.
+  WideString wide_text = UNSAFE_BUFFERS(WideStringFromFPDFWideString(text));
+  if (wide_text.IsEmpty()) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> page_dict = pdf_page->GetMutableDict();
+  if (!page_dict) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Object> old_contents =
+      page_dict->GetMutableObjectFor(pdfium::page_object::kContents);
+  std::vector<uint32_t> old_content_object_numbers;
+  if (!CollectOriginalContentRefs(old_contents, &old_content_object_numbers)) {
+    return false;
+  }
+
+  FPDF_FONT font_handle = FPDFText_LoadFont(document, font_data, font_data_size,
+                                            FPDF_FONT_TRUETYPE, /*cid=*/true);
+  if (!font_handle) {
+    return false;
+  }
+
+  CPDF_Font* font = CPDFFontFromFPDFFont(font_handle);
+  if (!font) {
+    FPDFFont_Close(font_handle);
+    return false;
+  }
+
+  ByteString encoded_text;
+  if (!EncodeUnicodeTextWithFont(wide_text, font, &encoded_text)) {
+    FPDFFont_Close(font_handle);
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> resources =
+      CPDF_PageResourceEditor::EnsurePageLocalResources(doc, pdf_page);
+  if (!resources) {
+    FPDFFont_Close(font_handle);
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> ext_gstate_resources =
+      CPDF_PageResourceEditor::EnsureLocalResourceSubdict(doc, resources,
+                                                          "ExtGState");
+  RetainPtr<CPDF_Dictionary> font_resources =
+      CPDF_PageResourceEditor::EnsureLocalResourceSubdict(doc, resources,
+                                                          "Font");
+  if (!ext_gstate_resources || !font_resources) {
+    FPDFFont_Close(font_handle);
+    return false;
+  }
+
+  CPDF_TextObject text_object;
+  text_object.SetDefaultStates();
+  text_object.mutable_text_state().SetFont(pdfium::WrapRetain(font));
+  text_object.mutable_text_state().SetFontSize(font_size);
+  text_object.SetText(encoded_text);
+
+  constexpr float kPi = 3.14159265358979323846f;
+  const float radians = rotation_degrees * kPi / 180.0f;
+  const float cos_theta = std::cos(radians);
+  const float sin_theta = std::sin(radians);
+  text_object.SetTextMatrix(
+      CFX_Matrix(cos_theta, sin_theta, -sin_theta, cos_theta, x, y));
+
+  std::vector<float> red = {1.0f, 0.0f, 0.0f};
+  text_object.mutable_color_state().SetFillColor(
+      CPDF_ColorSpace::GetStockCS(CPDF_ColorSpace::Family::kDeviceRGB),
+      std::move(red));
+  text_object.mutable_general_state().SetFillAlpha(alpha);
+  text_object.mutable_general_state().SetStrokeAlpha(alpha);
+
+  CPDF_PageContentGenerator generator(pdf_page);
+  ByteString generated_stream =
+      generator.GenerateAppendOnlyTextObjectStream(&text_object);
+  if (generated_stream.IsEmpty()) {
+    FPDFFont_Close(font_handle);
+    return false;
+  }
+
+  bool append_result = ReplacePageContentsWithIsolatedAppendStream(
+      doc, page_dict, old_content_object_numbers,
+      [&]() {
+        return NewContentStream(doc, generated_stream.AsStringView());
+      });
+
+  FPDFFont_Close(font_handle);
+  return append_result;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
 EPDFPage_AppendIsolatedImageProbeWithXObject(FPDF_DOCUMENT document,
                                              FPDF_PAGE page,
                                              const uint8_t* rgb_data,

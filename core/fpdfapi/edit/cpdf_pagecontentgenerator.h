@@ -38,6 +38,7 @@ class CPDF_PageContentGenerator {
 
   void GenerateContent();
   bool ProcessPageObjects(fxcrt::ostringstream* buf);
+  ByteString GenerateAppendOnlyTextObjectStream(CPDF_TextObject* text_object);
 
  private:
   friend class CPDFPageContentGeneratorTest;

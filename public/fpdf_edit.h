@@ -440,6 +440,60 @@ EPDFPage_AppendIsolatedUnicodeTextProbeWithEmbeddedFont(
 
 // Experimental EmbedPDF API.
 //
+// Appends an isolated Unicode text-object probe content stream by constructing
+// a temporary CPDF_TextObject and serializing it through PDFium's native
+// CPDF_PageContentGenerator::ProcessText() path. This validates whether native
+// text-object serialization can be reused by the append-only D-route without
+// using FPDFPage_GenerateContent() and without creating annotations.
+//
+// The API loads |font_data| through FPDFText_LoadFont() as
+// FPDF_FONT_TRUETYPE with cid=true, encodes |text| from UTF-16LE through the
+// loaded CPDF_Font's CharCodeFromUnicode()/AppendChar() path, rejects unmapped
+// characters, ensures page-local /Resources plus local /Font and /ExtGState
+// subdictionaries, then lets the native generator register FXF* and FXE*
+// resources used by the generated stream.
+//
+// Existing content stream objects are not modified. Existing /Contents entries
+// must be absent, an indirect stream reference, or an array of indirect stream
+// references. Pages with direct content streams or non-stream /Contents entries
+// are rejected.
+//
+// This is a D7A text-object serialization probe, not a production watermark
+// layout API. Complex shaping, bidi, font fallback, multi-line layout, and
+// production placement policy are intentionally out of scope.
+//
+// After a successful call, callers that need to render or inspect the updated
+// page through page-object APIs should close and reload the FPDF_PAGE. This API
+// updates the PDF object graph but does not refresh the current page object's
+// parsed content cache.
+//
+//   document         - handle to document that owns |page|.
+//   page             - handle to a page.
+//   font_data        - pointer to embedded TrueType/OpenType font bytes.
+//   font_data_size   - size of |font_data| in bytes.
+//   text             - NUL-terminated UTF-16LE text.
+//   x                - text matrix x translation.
+//   y                - text matrix y translation.
+//   font_size        - positive text font size.
+//   rotation_degrees - rotation around (x, y), in degrees.
+//   alpha            - fill/stroke alpha in [0.0, 1.0].
+//
+// Returns TRUE on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendIsolatedUnicodeTextObjectProbeWithEmbeddedFont(
+    FPDF_DOCUMENT document,
+    FPDF_PAGE page,
+    const uint8_t* font_data,
+    uint32_t font_data_size,
+    FPDF_WIDESTRING text,
+    float x,
+    float y,
+    float font_size,
+    float rotation_degrees,
+    float alpha);
+
+// Experimental EmbedPDF API.
+//
 // Appends an isolated image probe content stream that references a newly
 // created page-local ExtGState resource and a newly created page-local Image
 // XObject resource. This validates native image/XObject resource materialization
