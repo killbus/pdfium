@@ -1547,6 +1547,9 @@ bool AppendReusableUnicodeTextStampXObjectWithPlacementsInternal(
     float text_y,
     float font_size,
     const std::vector<CFX_Matrix>& placements,
+    unsigned int fill_R,
+    unsigned int fill_G,
+    unsigned int fill_B,
     float alpha) {
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
   CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page);
@@ -1559,7 +1562,8 @@ bool AppendReusableUnicodeTextStampXObjectWithPlacementsInternal(
       !std::isfinite(text_x) || !std::isfinite(text_y) ||
       !std::isfinite(font_size) || !std::isfinite(alpha) ||
       stamp_width <= 0.0f || stamp_height <= 0.0f ||
-      font_size <= 0.0f || alpha < 0.0f || alpha > 1.0f) {
+      font_size <= 0.0f || fill_R > 255 || fill_G > 255 || fill_B > 255 ||
+      alpha < 0.0f || alpha > 1.0f) {
     return false;
   }
 
@@ -1644,10 +1648,11 @@ bool AppendReusableUnicodeTextStampXObjectWithPlacementsInternal(
   text_object.SetText(encoded_text);
   text_object.SetTextMatrix(CFX_Matrix(1, 0, 0, 1, text_x, text_y));
 
-  std::vector<float> red = {1.0f, 0.0f, 0.0f};
+  std::vector<float> fill_color = {fill_R / 255.f, fill_G / 255.f,
+                                   fill_B / 255.f};
   text_object.mutable_color_state().SetFillColor(
       CPDF_ColorSpace::GetStockCS(CPDF_ColorSpace::Family::kDeviceRGB),
-      std::move(red));
+      std::move(fill_color));
   text_object.mutable_general_state().SetFillAlpha(alpha);
   text_object.mutable_general_state().SetStrokeAlpha(alpha);
 
@@ -1709,6 +1714,9 @@ EPDFPage_AppendReusableUnicodeTextStampXObjectProbe(
     float font_size,
     const FS_MATRIX* placements,
     uint32_t placement_count,
+    unsigned int fill_R,
+    unsigned int fill_G,
+    unsigned int fill_B,
     float alpha) {
   if (!placements || placement_count == 0) {
     return false;
@@ -1722,7 +1730,8 @@ EPDFPage_AppendReusableUnicodeTextStampXObjectProbe(
 
   return AppendReusableUnicodeTextStampXObjectWithPlacementsInternal(
       document, page, font_data, font_data_size, text, stamp_width,
-      stamp_height, text_x, text_y, font_size, placement_matrices, alpha);
+      stamp_height, text_x, text_y, font_size, placement_matrices, fill_R,
+      fill_G, fill_B, alpha);
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV

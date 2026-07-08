@@ -525,6 +525,9 @@ EPDFPage_AppendIsolatedUnicodeTextObjectProbeWithEmbeddedFont(
 //   font_size       - positive text font size.
 //   placements      - array of page placement matrices.
 //   placement_count - number of entries in |placements|.
+//   fill_R          - red component of the text fill color. Range: 0 - 255.
+//   fill_G          - green component of the text fill color. Range: 0 - 255.
+//   fill_B          - blue component of the text fill color. Range: 0 - 255.
 //   alpha           - fill/stroke alpha in [0.0, 1.0].
 //
 // Returns TRUE on success.
@@ -542,6 +545,9 @@ EPDFPage_AppendReusableUnicodeTextStampXObjectProbe(
     float font_size,
     const FS_MATRIX* placements,
     uint32_t placement_count,
+    unsigned int fill_R,
+    unsigned int fill_G,
+    unsigned int fill_B,
     float alpha);
 
 // Experimental EmbedPDF API.
