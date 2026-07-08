@@ -639,6 +639,45 @@ EPDFPage_AppendIsolatedRgbaImageProbeWithXObject(FPDF_DOCUMENT document,
                                                  float draw_height,
                                                  float alpha);
 
+// Create a reusable raw RGBA Image XObject in |document|. The image is encoded
+// as a DeviceRGB image stream with a DeviceGray /SMask alpha image stream,
+// matching EPDFPage_AppendIsolatedRgbaImageProbeWithXObject's alpha semantics.
+// The returned object number can be referenced by
+// EPDFPage_AppendReusableImageXObjectProbe() for multiple pages/placements in
+// the same document.
+//
+// This is a D5.2 reusable image-source substrate probe, not a production
+// watermark API. PNG/JPEG ingestion, image decoding, rotation, tiling, and
+// app-level layout are intentionally out of scope.
+//
+// Returns the Image XObject indirect object number on success, or 0 on failure.
+FPDF_EXPORT uint32_t FPDF_CALLCONV
+EPDFImageObj_CreateReusableRgbaImageXObjectProbe(FPDF_DOCUMENT document,
+                                                 const uint8_t* rgba_data,
+                                                 unsigned long rgba_size,
+                                                 int image_width,
+                                                 int image_height);
+
+// Append placements of an existing reusable Image XObject to |page|. Each
+// placement is a final page-space matrix written before drawing the Image
+// XObject. The inserted content is isolated from existing page contents with an
+// outer q/Q wrapper and uses one ExtGState for whole-image alpha. Page-local
+// resource names are still allocated per page, but they reference
+// |image_object_number| instead of materializing a fresh image stream.
+//
+// |image_object_number| must refer to an indirect Image XObject in |document|.
+// |placements| must contain |placement_count| finite, non-degenerate matrices.
+// Rotation, tiling, and app-level layout are caller responsibilities and should
+// be encoded in |placements|.
+// Returns TRUE on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendReusableImageXObjectProbe(FPDF_DOCUMENT document,
+                                         FPDF_PAGE page,
+                                         uint32_t image_object_number,
+                                         const FS_MATRIX* placements,
+                                         uint32_t placement_count,
+                                         float alpha);
+
 // Destroy |page_object| by releasing its resources. |page_object| must have
 // been created by FPDFPageObj_CreateNew{Path|Rect}() or
 // FPDFPageObj_New{Text|Image}Obj(). This function must be called on

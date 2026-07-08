@@ -165,6 +165,7 @@ int CheckPDFiumCApi() {
     CHK(FPDF_GetPageLabel);
 
     // fpdf_edit.h
+    CHK(EPDFImageObj_CreateReusableRgbaImageXObjectProbe);
     CHK(EPDFPage_AppendIsolatedImageProbeWithXObject);
     CHK(EPDFPage_AppendIsolatedRgbaImageProbeWithXObject);
     CHK(EPDFPage_AppendIsolatedTextProbeWithStandardFont);
@@ -172,6 +173,7 @@ int CheckPDFiumCApi() {
     CHK(EPDFPage_AppendIsolatedUnicodeTextProbeWithEmbeddedFont);
     CHK(EPDFPage_AppendIsolatedVectorProbe);
     CHK(EPDFPage_AppendIsolatedVectorProbeWithExtGState);
+    CHK(EPDFPage_AppendReusableImageXObjectProbe);
     CHK(EPDFPage_AppendReusableUnicodeTextStampXObjectProbe);
     CHK(FPDFFont_Close);
     CHK(FPDFFont_GetAscent);

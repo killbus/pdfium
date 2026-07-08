@@ -308,6 +308,22 @@ RetainPtr<CPDF_Stream> NewRawDeviceRgbaImageXObject(CPDF_Document* doc,
                                        std::move(image_dict));
 }
 
+bool IsReusableImageXObject(CPDF_Document* doc, uint32_t image_object_number) {
+  if (!doc || image_object_number == 0) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Stream> image_stream =
+      ToStream(doc->GetOrParseIndirectObject(image_object_number));
+  if (!image_stream) {
+    return false;
+  }
+
+  RetainPtr<const CPDF_Dictionary> image_dict = image_stream->GetDict();
+  return image_dict && image_dict->GetNameFor("Type") == "XObject" &&
+         image_dict->GetNameFor("Subtype") == "Image";
+}
+
 RetainPtr<CPDF_Dictionary> NewStandardHelveticaFont(CPDF_Document* doc) {
   auto font = doc->NewIndirect<CPDF_Dictionary>();
   font->SetNewFor<CPDF_Name>("Type", "Font");
@@ -437,6 +453,20 @@ RetainPtr<CPDF_Stream> NewReusableTextStampPlacementContentStream(
     buf << "q\n";
     WriteMatrix(buf, placement) << " cm\n/"
                                 << ByteString(xobject_name) << " Do\nQ\n";
+  }
+  return doc->NewIndirect<CPDF_Stream>(&buf);
+}
+
+RetainPtr<CPDF_Stream> NewReusableImageXObjectPlacementContentStream(
+    CPDF_Document* doc,
+    ByteStringView gs_name,
+    ByteStringView image_name,
+    const std::vector<CFX_Matrix>& placements) {
+  fxcrt::ostringstream buf;
+  for (const CFX_Matrix& placement : placements) {
+    buf << "q\n/" << ByteString(gs_name) << " gs\n";
+    WriteMatrix(buf, placement) << " cm\n/"
+                                << ByteString(image_name) << " Do\nQ\n";
   }
   return doc->NewIndirect<CPDF_Stream>(&buf);
 }
@@ -1858,6 +1888,120 @@ EPDFPage_AppendIsolatedRgbaImageProbeWithXObject(FPDF_DOCUMENT document,
             draw_width, draw_height);
       });
 }
+
+FPDF_EXPORT uint32_t FPDF_CALLCONV
+EPDFImageObj_CreateReusableRgbaImageXObjectProbe(FPDF_DOCUMENT document,
+                                                 const uint8_t* rgba_data,
+                                                 unsigned long rgba_size,
+                                                 int image_width,
+                                                 int image_height) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc || !rgba_data ||
+      !IsValidRawDeviceRgbaSize(image_width, image_height, rgba_size)) {
+    return 0;
+  }
+
+  RetainPtr<CPDF_Stream> image_xobject = NewRawDeviceRgbaImageXObject(
+      doc, rgba_data, rgba_size, image_width, image_height);
+  return image_xobject ? image_xobject->GetObjNum() : 0;
+}
+
+bool AppendReusableImageXObjectWithPlacementsInternal(
+    FPDF_DOCUMENT document,
+    FPDF_PAGE page,
+    uint32_t image_object_number,
+    const std::vector<CFX_Matrix>& placements,
+    float alpha) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page);
+  if (!doc || !IsPageObject(pdf_page) || pdf_page->GetDocument() != doc) {
+    return false;
+  }
+  if (!IsReusableImageXObject(doc, image_object_number) || placements.empty() ||
+      !std::isfinite(alpha) || alpha < 0.0f || alpha > 1.0f) {
+    return false;
+  }
+
+  for (const CFX_Matrix& placement : placements) {
+    if (!IsValidPlacementMatrix(placement)) {
+      return false;
+    }
+  }
+
+  RetainPtr<CPDF_Dictionary> page_dict = pdf_page->GetMutableDict();
+  if (!page_dict) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Object> old_contents =
+      page_dict->GetMutableObjectFor(pdfium::page_object::kContents);
+  std::vector<uint32_t> old_content_object_numbers;
+  if (!CollectOriginalContentRefs(old_contents, &old_content_object_numbers)) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> resources =
+      CPDF_PageResourceEditor::EnsurePageLocalResources(doc, pdf_page);
+  if (!resources) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> ext_gstate_resources =
+      CPDF_PageResourceEditor::EnsureLocalResourceSubdict(doc, resources,
+                                                          "ExtGState");
+  RetainPtr<CPDF_Dictionary> xobject_resources =
+      CPDF_PageResourceEditor::EnsureLocalResourceSubdict(doc, resources,
+                                                          "XObject");
+  if (!ext_gstate_resources || !xobject_resources) {
+    return false;
+  }
+
+  ByteString gs_name =
+      CPDF_PageResourceEditor::AllocateUniqueResourceName(ext_gstate_resources,
+                                                          "GS");
+  ByteString image_name =
+      CPDF_PageResourceEditor::AllocateUniqueResourceName(xobject_resources,
+                                                          "Im");
+  if (gs_name.IsEmpty() || image_name.IsEmpty()) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> ext_gstate = NewExtGState(doc, alpha);
+  ext_gstate_resources->SetNewFor<CPDF_Reference>(gs_name, doc,
+                                                  ext_gstate->GetObjNum());
+  xobject_resources->SetNewFor<CPDF_Reference>(image_name, doc,
+                                               image_object_number);
+
+  return ReplacePageContentsWithIsolatedAppendStream(
+      doc, page_dict, old_content_object_numbers,
+      [&]() {
+        return NewReusableImageXObjectPlacementContentStream(
+            doc, gs_name.AsStringView(), image_name.AsStringView(),
+            placements);
+      });
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendReusableImageXObjectProbe(FPDF_DOCUMENT document,
+                                         FPDF_PAGE page,
+                                         uint32_t image_object_number,
+                                         const FS_MATRIX* placements,
+                                         uint32_t placement_count,
+                                         float alpha) {
+  if (!placements || placement_count == 0) {
+    return false;
+  }
+
+  std::vector<CFX_Matrix> placement_matrices;
+  placement_matrices.reserve(placement_count);
+  for (uint32_t i = 0; i < placement_count; ++i) {
+    placement_matrices.push_back(CFXMatrixFromFSMatrix(placements[i]));
+  }
+
+  return AppendReusableImageXObjectWithPlacementsInternal(
+      document, page, image_object_number, placement_matrices, alpha);
+}
+
 
 FPDF_EXPORT void FPDF_CALLCONV
 FPDFPageObj_Transform(FPDF_PAGEOBJECT page_object,
