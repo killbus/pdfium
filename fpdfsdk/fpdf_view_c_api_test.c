@@ -174,7 +174,8 @@ int CheckPDFiumCApi() {
     CHK(EPDFPage_AppendIsolatedVectorProbe);
     CHK(EPDFPage_AppendIsolatedVectorProbeWithExtGState);
     CHK(EPDFPage_AppendReusableImageXObjectProbe);
-    CHK(EPDFPage_AppendReusableUnicodeTextStampXObjectProbe);
+    CHK(EPDFPage_AppendReusableUnicodeTextStampXObjectWithEmbeddedFontProbe);
+    CHK(EPDFPage_AppendReusableUnicodeTextStampXObjectWithStandardFontProbe);
     CHK(FPDFFont_Close);
     CHK(FPDFFont_GetAscent);
     CHK(FPDFFont_GetBaseFontName);

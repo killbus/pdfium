@@ -55,6 +55,7 @@
 #include "core/fxcrt/span_util.h"
 #include "core/fxcrt/stl_util.h"
 #include "core/fxge/cfx_font.h"
+#include "core/fxge/cfx_fontmapper.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "public/fpdf_formfill.h"
 
@@ -80,6 +81,28 @@ static_assert(FPDF_PAGEOBJ_SHADING ==
 static_assert(FPDF_PAGEOBJ_FORM ==
                   static_cast<int>(CPDF_PageObject::Type::kForm),
               "FPDF_PAGEOBJ_FORM/CPDF_PageObject::FORM mismatch");
+
+FPDF_FONT LoadReusableTextStampEmbeddedFont(FPDF_DOCUMENT document,
+                                            const uint8_t* font_data,
+                                            uint32_t font_data_size) {
+  if (!font_data || font_data_size == 0) {
+    return nullptr;
+  }
+  return FPDFText_LoadFont(document, font_data, font_data_size,
+                           FPDF_FONT_TRUETYPE, /*cid=*/true);
+}
+
+FPDF_FONT LoadReusableTextStampStandardFont(
+    FPDF_DOCUMENT document,
+    FPDF_BYTESTRING standard_font_name) {
+  // Use the exact Base14 check, not GetStandardFontName(), which accepts
+  // and normalizes aliases such as Arial and TimesNewRoman.
+  if (!standard_font_name ||
+      !CFX_FontMapper::IsStandardFontName(standard_font_name)) {
+    return nullptr;
+  }
+  return FPDFText_LoadStandardFont(document, standard_font_name);
+}
 
 bool IsPageObject(CPDF_Page* pPage) {
   if (!pPage) {
@@ -1538,8 +1561,7 @@ EPDFPage_AppendIsolatedUnicodeTextObjectProbeWithEmbeddedFont(
 bool AppendReusableUnicodeTextStampXObjectWithPlacementsInternal(
     FPDF_DOCUMENT document,
     FPDF_PAGE page,
-    const uint8_t* font_data,
-    uint32_t font_data_size,
+    FPDF_FONT font_handle,
     FPDF_WIDESTRING text,
     float stamp_width,
     float stamp_height,
@@ -1551,24 +1573,31 @@ bool AppendReusableUnicodeTextStampXObjectWithPlacementsInternal(
     unsigned int fill_G,
     unsigned int fill_B,
     float alpha) {
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
-  CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page);
-  if (!doc || !IsPageObject(pdf_page) || pdf_page->GetDocument() != doc) {
+  if (!font_handle) {
     return false;
   }
 
-  if (!font_data || font_data_size == 0 || !text || placements.empty() ||
-      !std::isfinite(stamp_width) || !std::isfinite(stamp_height) ||
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page);
+  if (!doc || !IsPageObject(pdf_page) || pdf_page->GetDocument() != doc) {
+    FPDFFont_Close(font_handle);
+    return false;
+  }
+
+  if (!text || placements.empty() || !std::isfinite(stamp_width) ||
+      !std::isfinite(stamp_height) ||
       !std::isfinite(text_x) || !std::isfinite(text_y) ||
       !std::isfinite(font_size) || !std::isfinite(alpha) ||
       stamp_width <= 0.0f || stamp_height <= 0.0f ||
       font_size <= 0.0f || fill_R > 255 || fill_G > 255 || fill_B > 255 ||
       alpha < 0.0f || alpha > 1.0f) {
+    FPDFFont_Close(font_handle);
     return false;
   }
 
   for (const CFX_Matrix& placement : placements) {
     if (!IsValidPlacementMatrix(placement)) {
+      FPDFFont_Close(font_handle);
       return false;
     }
   }
@@ -1576,11 +1605,13 @@ bool AppendReusableUnicodeTextStampXObjectWithPlacementsInternal(
   // SAFETY: The public API contract requires `text` to be NUL-terminated.
   WideString wide_text = UNSAFE_BUFFERS(WideStringFromFPDFWideString(text));
   if (wide_text.IsEmpty()) {
+    FPDFFont_Close(font_handle);
     return false;
   }
 
   RetainPtr<CPDF_Dictionary> page_dict = pdf_page->GetMutableDict();
   if (!page_dict) {
+    FPDFFont_Close(font_handle);
     return false;
   }
 
@@ -1588,12 +1619,7 @@ bool AppendReusableUnicodeTextStampXObjectWithPlacementsInternal(
       page_dict->GetMutableObjectFor(pdfium::page_object::kContents);
   std::vector<uint32_t> old_content_object_numbers;
   if (!CollectOriginalContentRefs(old_contents, &old_content_object_numbers)) {
-    return false;
-  }
-
-  FPDF_FONT font_handle = FPDFText_LoadFont(document, font_data, font_data_size,
-                                            FPDF_FONT_TRUETYPE, /*cid=*/true);
-  if (!font_handle) {
+    FPDFFont_Close(font_handle);
     return false;
   }
 
@@ -1701,7 +1727,7 @@ bool AppendReusableUnicodeTextStampXObjectWithPlacementsInternal(
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFPage_AppendReusableUnicodeTextStampXObjectProbe(
+EPDFPage_AppendReusableUnicodeTextStampXObjectWithEmbeddedFontProbe(
     FPDF_DOCUMENT document,
     FPDF_PAGE page,
     const uint8_t* font_data,
@@ -1728,10 +1754,47 @@ EPDFPage_AppendReusableUnicodeTextStampXObjectProbe(
     placement_matrices.push_back(CFXMatrixFromFSMatrix(placements[i]));
   }
 
+  FPDF_FONT font_handle =
+      LoadReusableTextStampEmbeddedFont(document, font_data, font_data_size);
+
   return AppendReusableUnicodeTextStampXObjectWithPlacementsInternal(
-      document, page, font_data, font_data_size, text, stamp_width,
-      stamp_height, text_x, text_y, font_size, placement_matrices, fill_R,
-      fill_G, fill_B, alpha);
+      document, page, font_handle, text, stamp_width, stamp_height, text_x,
+      text_y, font_size, placement_matrices, fill_R, fill_G, fill_B, alpha);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendReusableUnicodeTextStampXObjectWithStandardFontProbe(
+    FPDF_DOCUMENT document,
+    FPDF_PAGE page,
+    FPDF_BYTESTRING standard_font_name,
+    FPDF_WIDESTRING text,
+    float stamp_width,
+    float stamp_height,
+    float text_x,
+    float text_y,
+    float font_size,
+    const FS_MATRIX* placements,
+    uint32_t placement_count,
+    unsigned int fill_R,
+    unsigned int fill_G,
+    unsigned int fill_B,
+    float alpha) {
+  if (!placements || placement_count == 0) {
+    return false;
+  }
+
+  std::vector<CFX_Matrix> placement_matrices;
+  placement_matrices.reserve(placement_count);
+  for (uint32_t i = 0; i < placement_count; ++i) {
+    placement_matrices.push_back(CFXMatrixFromFSMatrix(placements[i]));
+  }
+
+  FPDF_FONT font_handle =
+      LoadReusableTextStampStandardFont(document, standard_font_name);
+
+  return AppendReusableUnicodeTextStampXObjectWithPlacementsInternal(
+      document, page, font_handle, text, stamp_width, stamp_height, text_x,
+      text_y, font_size, placement_matrices, fill_R, fill_G, fill_B, alpha);
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV

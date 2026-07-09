@@ -513,6 +513,8 @@ EPDFPage_AppendIsolatedUnicodeTextObjectProbeWithEmbeddedFont(
 // updates the PDF object graph but does not refresh the current page object's
 // parsed content cache.
 //
+// The embedded-font entrypoint loads caller-provided TrueType/OpenType bytes.
+//
 //   document        - handle to document that owns |page|.
 //   page            - handle to a page.
 //   font_data       - pointer to embedded TrueType/OpenType font bytes.
@@ -532,11 +534,50 @@ EPDFPage_AppendIsolatedUnicodeTextObjectProbeWithEmbeddedFont(
 //
 // Returns TRUE on success.
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFPage_AppendReusableUnicodeTextStampXObjectProbe(
+EPDFPage_AppendReusableUnicodeTextStampXObjectWithEmbeddedFontProbe(
     FPDF_DOCUMENT document,
     FPDF_PAGE page,
     const uint8_t* font_data,
     uint32_t font_data_size,
+    FPDF_WIDESTRING text,
+    float stamp_width,
+    float stamp_height,
+    float text_x,
+    float text_y,
+    float font_size,
+    const FS_MATRIX* placements,
+    uint32_t placement_count,
+    unsigned int fill_R,
+    unsigned int fill_G,
+    unsigned int fill_B,
+    float alpha);
+
+// The standard-font entrypoint loads an exact canonical PDF Base14 font name.
+// This EPDF reusable text stamp API intentionally rejects the broader alias set
+// accepted by FPDFText_LoadStandardFont().
+//
+//   document           - handle to document that owns |page|.
+//   page               - handle to a page.
+//   standard_font_name - NUL-terminated canonical PDF Base14 font name.
+//   text               - NUL-terminated UTF-16LE text.
+//   stamp_width        - positive Form XObject BBox width.
+//   stamp_height       - positive Form XObject BBox height.
+//   text_x             - text matrix x translation inside the Form.
+//   text_y             - text matrix y translation inside the Form.
+//   font_size          - positive text font size.
+//   placements         - array of page placement matrices.
+//   placement_count    - number of entries in |placements|.
+//   fill_R             - red component of the text fill color. Range: 0 - 255.
+//   fill_G             - green component of the text fill color. Range: 0 - 255.
+//   fill_B             - blue component of the text fill color. Range: 0 - 255.
+//   alpha              - fill/stroke alpha in [0.0, 1.0].
+//
+// Returns TRUE on success.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendReusableUnicodeTextStampXObjectWithStandardFontProbe(
+    FPDF_DOCUMENT document,
+    FPDF_PAGE page,
+    FPDF_BYTESTRING standard_font_name,
     FPDF_WIDESTRING text,
     float stamp_width,
     float stamp_height,
