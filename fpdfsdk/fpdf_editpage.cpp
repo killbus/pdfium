@@ -11,6 +11,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -1558,70 +1559,90 @@ EPDFPage_AppendIsolatedUnicodeTextObjectProbeWithEmbeddedFont(
   return append_result;
 }
 
-bool AppendReusableUnicodeTextStampXObjectWithPlacementsInternal(
-    FPDF_DOCUMENT document,
-    FPDF_PAGE page,
-    FPDF_FONT font_handle,
-    FPDF_WIDESTRING text,
-    float stamp_width,
-    float stamp_height,
-    float text_x,
-    float text_y,
-    float font_size,
-    const std::vector<CFX_Matrix>& placements,
-    unsigned int fill_R,
-    unsigned int fill_G,
-    unsigned int fill_B,
-    float alpha) {
-  if (!font_handle) {
-    return false;
-  }
+struct ReusableTextStampParams {
+  FPDF_DOCUMENT document;
+  FPDF_PAGE page;
+  FPDF_WIDESTRING text;
+  float stamp_width;
+  float stamp_height;
+  float text_x;
+  float text_y;
+  float font_size;
+  const std::vector<CFX_Matrix>& placements;
+  unsigned int fill_R;
+  unsigned int fill_G;
+  unsigned int fill_B;
+  float alpha;
+};
 
-  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
-  CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page);
+struct ReusableTextStampPreflight {
+  CPDF_Document* document;
+  CPDF_Page* page;
+  RetainPtr<CPDF_Dictionary> page_dict;
+  WideString text;
+  std::vector<uint32_t> old_content_object_numbers;
+};
+
+std::optional<ReusableTextStampPreflight> PrepareReusableTextStamp(
+    const ReusableTextStampParams& params) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(params.document);
+  CPDF_Page* pdf_page = CPDFPageFromFPDFPage(params.page);
   if (!doc || !IsPageObject(pdf_page) || pdf_page->GetDocument() != doc) {
-    FPDFFont_Close(font_handle);
-    return false;
+    return std::nullopt;
   }
 
-  if (!text || placements.empty() || !std::isfinite(stamp_width) ||
-      !std::isfinite(stamp_height) ||
-      !std::isfinite(text_x) || !std::isfinite(text_y) ||
-      !std::isfinite(font_size) || !std::isfinite(alpha) ||
-      stamp_width <= 0.0f || stamp_height <= 0.0f ||
-      font_size <= 0.0f || fill_R > 255 || fill_G > 255 || fill_B > 255 ||
-      alpha < 0.0f || alpha > 1.0f) {
-    FPDFFont_Close(font_handle);
-    return false;
+  if (!params.text || params.placements.empty() ||
+      !std::isfinite(params.stamp_width) ||
+      !std::isfinite(params.stamp_height) ||
+      !std::isfinite(params.text_x) || !std::isfinite(params.text_y) ||
+      !std::isfinite(params.font_size) || !std::isfinite(params.alpha) ||
+      params.stamp_width <= 0.0f || params.stamp_height <= 0.0f ||
+      params.font_size <= 0.0f || params.fill_R > 255 ||
+      params.fill_G > 255 || params.fill_B > 255 || params.alpha < 0.0f ||
+      params.alpha > 1.0f) {
+    return std::nullopt;
   }
 
-  for (const CFX_Matrix& placement : placements) {
+  for (const CFX_Matrix& placement : params.placements) {
     if (!IsValidPlacementMatrix(placement)) {
-      FPDFFont_Close(font_handle);
-      return false;
+      return std::nullopt;
     }
   }
 
   // SAFETY: The public API contract requires `text` to be NUL-terminated.
-  WideString wide_text = UNSAFE_BUFFERS(WideStringFromFPDFWideString(text));
+  WideString wide_text =
+      UNSAFE_BUFFERS(WideStringFromFPDFWideString(params.text));
   if (wide_text.IsEmpty()) {
-    FPDFFont_Close(font_handle);
-    return false;
+    return std::nullopt;
   }
 
   RetainPtr<CPDF_Dictionary> page_dict = pdf_page->GetMutableDict();
   if (!page_dict) {
-    FPDFFont_Close(font_handle);
-    return false;
+    return std::nullopt;
   }
 
   RetainPtr<CPDF_Object> old_contents =
       page_dict->GetMutableObjectFor(pdfium::page_object::kContents);
   std::vector<uint32_t> old_content_object_numbers;
   if (!CollectOriginalContentRefs(old_contents, &old_content_object_numbers)) {
-    FPDFFont_Close(font_handle);
+    return std::nullopt;
+  }
+
+  return ReusableTextStampPreflight{
+      doc, pdf_page, std::move(page_dict), std::move(wide_text),
+      std::move(old_content_object_numbers)};
+}
+
+bool AppendReusableUnicodeTextStampXObjectWithPlacementsInternal(
+    FPDF_FONT font_handle,
+    ReusableTextStampPreflight preflight,
+    const ReusableTextStampParams& params) {
+  if (!font_handle) {
     return false;
   }
+
+  CPDF_Document* doc = preflight.document;
+  CPDF_Page* pdf_page = preflight.page;
 
   CPDF_Font* font = CPDFFontFromFPDFFont(font_handle);
   if (!font) {
@@ -1630,7 +1651,7 @@ bool AppendReusableUnicodeTextStampXObjectWithPlacementsInternal(
   }
 
   ByteString encoded_text;
-  if (!EncodeUnicodeTextWithFont(wide_text, font, &encoded_text)) {
+  if (!EncodeUnicodeTextWithFont(preflight.text, font, &encoded_text)) {
     FPDFFont_Close(font_handle);
     return false;
   }
@@ -1639,7 +1660,8 @@ bool AppendReusableUnicodeTextStampXObjectWithPlacementsInternal(
   form_dict->SetNewFor<CPDF_Name>("Type", "XObject");
   form_dict->SetNewFor<CPDF_Name>("Subtype", "Form");
   form_dict->SetNewFor<CPDF_Number>("FormType", 1);
-  form_dict->SetRectFor("BBox", CFX_FloatRect(0, 0, stamp_width, stamp_height));
+  form_dict->SetRectFor(
+      "BBox", CFX_FloatRect(0, 0, params.stamp_width, params.stamp_height));
   form_dict->SetMatrixFor("Matrix", CFX_Matrix());
   RetainPtr<CPDF_Dictionary> form_resources =
       form_dict->SetNewFor<CPDF_Dictionary>("Resources");
@@ -1670,17 +1692,19 @@ bool AppendReusableUnicodeTextStampXObjectWithPlacementsInternal(
   CPDF_TextObject text_object;
   text_object.SetDefaultStates();
   text_object.mutable_text_state().SetFont(pdfium::WrapRetain(font));
-  text_object.mutable_text_state().SetFontSize(font_size);
+  text_object.mutable_text_state().SetFontSize(params.font_size);
   text_object.SetText(encoded_text);
-  text_object.SetTextMatrix(CFX_Matrix(1, 0, 0, 1, text_x, text_y));
+  text_object.SetTextMatrix(
+      CFX_Matrix(1, 0, 0, 1, params.text_x, params.text_y));
 
-  std::vector<float> fill_color = {fill_R / 255.f, fill_G / 255.f,
-                                   fill_B / 255.f};
+  std::vector<float> fill_color = {params.fill_R / 255.f,
+                                   params.fill_G / 255.f,
+                                   params.fill_B / 255.f};
   text_object.mutable_color_state().SetFillColor(
       CPDF_ColorSpace::GetStockCS(CPDF_ColorSpace::Family::kDeviceRGB),
       std::move(fill_color));
-  text_object.mutable_general_state().SetFillAlpha(alpha);
-  text_object.mutable_general_state().SetStrokeAlpha(alpha);
+  text_object.mutable_general_state().SetFillAlpha(params.alpha);
+  text_object.mutable_general_state().SetStrokeAlpha(params.alpha);
 
   CPDF_PageContentGenerator form_generator(&form_holder);
   ByteString form_content =
@@ -1716,10 +1740,10 @@ bool AppendReusableUnicodeTextStampXObjectWithPlacementsInternal(
                                                form_stream->GetObjNum());
 
   bool append_result = ReplacePageContentsWithIsolatedAppendStream(
-      doc, page_dict, old_content_object_numbers,
+      doc, preflight.page_dict, preflight.old_content_object_numbers,
       [&]() {
         return NewReusableTextStampPlacementContentStream(
-            doc, stamp_name.AsStringView(), placements);
+            doc, stamp_name.AsStringView(), params.placements);
       });
 
   FPDFFont_Close(font_handle);
@@ -1754,12 +1778,21 @@ EPDFPage_AppendReusableUnicodeTextStampXObjectWithEmbeddedFontProbe(
     placement_matrices.push_back(CFXMatrixFromFSMatrix(placements[i]));
   }
 
+  ReusableTextStampParams params = {
+      document,     page,   text,   stamp_width, stamp_height,
+      text_x,       text_y, font_size, placement_matrices,
+      fill_R,       fill_G, fill_B, alpha};
+  std::optional<ReusableTextStampPreflight> preflight =
+      PrepareReusableTextStamp(params);
+  if (!preflight.has_value()) {
+    return false;
+  }
+
   FPDF_FONT font_handle =
       LoadReusableTextStampEmbeddedFont(document, font_data, font_data_size);
 
   return AppendReusableUnicodeTextStampXObjectWithPlacementsInternal(
-      document, page, font_handle, text, stamp_width, stamp_height, text_x,
-      text_y, font_size, placement_matrices, fill_R, fill_G, fill_B, alpha);
+      font_handle, std::move(*preflight), params);
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -1789,12 +1822,21 @@ EPDFPage_AppendReusableUnicodeTextStampXObjectWithStandardFontProbe(
     placement_matrices.push_back(CFXMatrixFromFSMatrix(placements[i]));
   }
 
+  ReusableTextStampParams params = {
+      document,     page,   text,   stamp_width, stamp_height,
+      text_x,       text_y, font_size, placement_matrices,
+      fill_R,       fill_G, fill_B, alpha};
+  std::optional<ReusableTextStampPreflight> preflight =
+      PrepareReusableTextStamp(params);
+  if (!preflight.has_value()) {
+    return false;
+  }
+
   FPDF_FONT font_handle =
       LoadReusableTextStampStandardFont(document, standard_font_name);
 
   return AppendReusableUnicodeTextStampXObjectWithPlacementsInternal(
-      document, page, font_handle, text, stamp_width, stamp_height, text_x,
-      text_y, font_size, placement_matrices, fill_R, fill_G, fill_B, alpha);
+      font_handle, std::move(*preflight), params);
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV

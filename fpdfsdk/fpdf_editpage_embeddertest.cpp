@@ -5,12 +5,24 @@
 #include "public/fpdf_edit.h"
 
 #include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
 
+#include "constants/page_object.h"
+#include "core/fpdfapi/page/cpdf_page.h"
+#include "core/fpdfapi/parser/cpdf_dictionary.h"
+#include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fpdfapi/parser/cpdf_number.h"
 #include "core/fxcrt/fx_system.h"
+#include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxge/cfx_defaultrenderdevice.h"
+#include "fpdfsdk/cpdfsdk_helpers.h"
 #include "testing/embedder_test.h"
 #include "testing/embedder_test_constants.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "testing/utils/file_util.h"
+#include "testing/utils/path_service.h"
 
 using ::testing::Each;
 using ::testing::Eq;
@@ -18,6 +30,55 @@ using ::testing::FloatEq;
 using ::testing::Gt;
 
 class FPDFEditPageEmbedderTest : public EmbedderTest {};
+
+TEST_F(FPDFEditPageEmbedderTest,
+       ReusableTextStampPreflightDoesNotAddObjects) {
+  CreateEmptyDocument();
+  ScopedFPDFPage page(FPDFPage_New(document(), 0, 612, 792));
+  ASSERT_TRUE(page);
+
+  const std::string font_path =
+      PathService::GetTestFilePath("fonts/ahem/Ahem.ttf");
+  const std::vector<uint8_t> font_data = GetFileContents(font_path.c_str());
+  ASSERT_FALSE(font_data.empty());
+
+  CPDF_Document* pdf_document =
+      CPDFDocumentFromFPDFDocument(document());
+  ASSERT_TRUE(pdf_document);
+  const uint32_t font_data_size =
+      pdfium::checked_cast<uint32_t>(font_data.size());
+  const FS_MATRIX placement = {1, 0, 0, 1, 10, 10};
+  static constexpr FPDF_WCHAR kText[] = {'A', 0};
+
+  uint32_t last_object_number = pdf_document->GetLastObjNum();
+  EXPECT_FALSE(
+      EPDFPage_AppendReusableUnicodeTextStampXObjectWithEmbeddedFontProbe(
+          document(), page.get(), font_data.data(), font_data_size, nullptr,
+          100, 40, 5, 10, 12, &placement, 1, 0, 0, 0, 1));
+  EXPECT_EQ(last_object_number, pdf_document->GetLastObjNum());
+  EXPECT_FALSE(
+      EPDFPage_AppendReusableUnicodeTextStampXObjectWithStandardFontProbe(
+          document(), page.get(), "Helvetica", nullptr, 100, 40, 5, 10, 12,
+          &placement, 1, 0, 0, 0, 1));
+  EXPECT_EQ(last_object_number, pdf_document->GetLastObjNum());
+
+  CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page.get());
+  ASSERT_TRUE(pdf_page);
+  pdf_page->GetMutableDict()->SetNewFor<CPDF_Number>(
+      pdfium::page_object::kContents, 1);
+
+  last_object_number = pdf_document->GetLastObjNum();
+  EXPECT_FALSE(
+      EPDFPage_AppendReusableUnicodeTextStampXObjectWithEmbeddedFontProbe(
+          document(), page.get(), font_data.data(), font_data_size, kText, 100,
+          40, 5, 10, 12, &placement, 1, 0, 0, 0, 1));
+  EXPECT_EQ(last_object_number, pdf_document->GetLastObjNum());
+  EXPECT_FALSE(
+      EPDFPage_AppendReusableUnicodeTextStampXObjectWithStandardFontProbe(
+          document(), page.get(), "Helvetica", kText, 100, 40, 5, 10, 12,
+          &placement, 1, 0, 0, 0, 1));
+  EXPECT_EQ(last_object_number, pdf_document->GetLastObjNum());
+}
 
 TEST_F(FPDFEditPageEmbedderTest, Rotation) {
   const char* rotated_checksum = []() {
