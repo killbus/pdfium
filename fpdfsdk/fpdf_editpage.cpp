@@ -468,6 +468,17 @@ bool IsValidPlacementMatrix(const CFX_Matrix& matrix) {
          matrix.a * matrix.d - matrix.b * matrix.c != 0.0f;
 }
 
+std::vector<CFX_Matrix> ConvertPlacementMatrices(
+    const FS_MATRIX* placements,
+    uint32_t placement_count) {
+  std::vector<CFX_Matrix> matrices;
+  matrices.reserve(placement_count);
+  for (uint32_t i = 0; i < placement_count; ++i) {
+    matrices.push_back(CFXMatrixFromFSMatrix(placements[i]));
+  }
+  return matrices;
+}
+
 RetainPtr<CPDF_Stream> NewReusableTextStampPlacementContentStream(
     CPDF_Document* doc,
     ByteStringView xobject_name,
@@ -1583,6 +1594,91 @@ struct ReusableTextStampPreflight {
   std::vector<uint32_t> old_content_object_numbers;
 };
 
+struct ReusableTextFormParams {
+  float stamp_width;
+  float stamp_height;
+  float text_x;
+  float text_y;
+  float font_size;
+  unsigned int fill_R;
+  unsigned int fill_G;
+  unsigned int fill_B;
+  float alpha;
+};
+
+RetainPtr<CPDF_Stream> NewReusableTextFormStream(
+    CPDF_Document* doc,
+    const ReusableTextFormParams& params) {
+  auto form_dict = doc->New<CPDF_Dictionary>();
+  form_dict->SetNewFor<CPDF_Name>("Type", "XObject");
+  form_dict->SetNewFor<CPDF_Name>("Subtype", "Form");
+  form_dict->SetNewFor<CPDF_Number>("FormType", 1);
+  form_dict->SetRectFor(
+      "BBox", CFX_FloatRect(0, 0, params.stamp_width, params.stamp_height));
+  form_dict->SetMatrixFor("Matrix", CFX_Matrix());
+  RetainPtr<CPDF_Dictionary> resources =
+      form_dict->SetNewFor<CPDF_Dictionary>("Resources");
+  RetainPtr<CPDF_Stream> form_stream =
+      doc->NewIndirect<CPDF_Stream>(std::move(form_dict));
+  if (!resources || !form_stream ||
+      !CPDF_PageResourceEditor::EnsureLocalResourceSubdict(doc, resources,
+                                                           "ExtGState") ||
+      !CPDF_PageResourceEditor::EnsureLocalResourceSubdict(doc, resources,
+                                                           "Font")) {
+    return nullptr;
+  }
+  return form_stream;
+}
+
+ByteString NewReusableTextFormContent(
+    CPDF_Form* form_holder,
+    CPDF_Font* font,
+    const ByteString& encoded_text,
+    const ReusableTextFormParams& params) {
+  CPDF_TextObject text_object;
+  text_object.SetDefaultStates();
+  text_object.mutable_text_state().SetFont(pdfium::WrapRetain(font));
+  text_object.mutable_text_state().SetFontSize(params.font_size);
+  text_object.SetText(encoded_text);
+  text_object.SetTextMatrix(
+      CFX_Matrix(1, 0, 0, 1, params.text_x, params.text_y));
+  text_object.mutable_color_state().SetFillColor(
+      CPDF_ColorSpace::GetStockCS(CPDF_ColorSpace::Family::kDeviceRGB),
+      {params.fill_R / 255.f, params.fill_G / 255.f,
+       params.fill_B / 255.f});
+  text_object.mutable_general_state().SetFillAlpha(params.alpha);
+  text_object.mutable_general_state().SetStrokeAlpha(params.alpha);
+
+  CPDF_PageContentGenerator generator(form_holder);
+  return generator.GenerateAppendOnlyTextObjectStream(&text_object);
+}
+
+RetainPtr<CPDF_Stream> NewReusableUnicodeTextForm(
+    CPDF_Document* doc,
+    CPDF_Font* font,
+    const ByteString& encoded_text,
+    const ReusableTextFormParams& params) {
+  RetainPtr<CPDF_Stream> form_stream =
+      NewReusableTextFormStream(doc, params);
+  RetainPtr<CPDF_Dictionary> resources =
+      form_stream ? form_stream->GetMutableDict()->GetMutableDictFor("Resources")
+                  : nullptr;
+  if (!resources) {
+    return nullptr;
+  }
+  CPDF_Form form_holder(doc, RetainPtr<CPDF_Dictionary>(), form_stream);
+  if (form_holder.GetMutableResources().Get() != resources.Get()) {
+    return nullptr;
+  }
+  ByteString content = NewReusableTextFormContent(
+      &form_holder, font, encoded_text, params);
+  if (content.IsEmpty()) {
+    return nullptr;
+  }
+  form_stream->SetData(content.unsigned_span());
+  return form_stream;
+}
+
 std::optional<ReusableTextStampPreflight> PrepareReusableTextStamp(
     const ReusableTextStampParams& params) {
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(params.document);
@@ -1656,64 +1752,15 @@ bool AppendReusableUnicodeTextStampXObjectWithPlacementsInternal(
     return false;
   }
 
-  auto form_dict = doc->New<CPDF_Dictionary>();
-  form_dict->SetNewFor<CPDF_Name>("Type", "XObject");
-  form_dict->SetNewFor<CPDF_Name>("Subtype", "Form");
-  form_dict->SetNewFor<CPDF_Number>("FormType", 1);
-  form_dict->SetRectFor(
-      "BBox", CFX_FloatRect(0, 0, params.stamp_width, params.stamp_height));
-  form_dict->SetMatrixFor("Matrix", CFX_Matrix());
-  RetainPtr<CPDF_Dictionary> form_resources =
-      form_dict->SetNewFor<CPDF_Dictionary>("Resources");
-  RetainPtr<CPDF_Stream> form_stream =
-      doc->NewIndirect<CPDF_Stream>(std::move(form_dict));
-  if (!form_stream || !form_resources) {
+  RetainPtr<CPDF_Stream> form_stream = NewReusableUnicodeTextForm(
+      doc, font, encoded_text,
+      {params.stamp_width, params.stamp_height, params.text_x, params.text_y,
+       params.font_size, params.fill_R, params.fill_G, params.fill_B,
+       params.alpha});
+  if (!form_stream) {
     FPDFFont_Close(font_handle);
     return false;
   }
-
-  RetainPtr<CPDF_Dictionary> form_ext_gstate_resources =
-      CPDF_PageResourceEditor::EnsureLocalResourceSubdict(doc, form_resources,
-                                                          "ExtGState");
-  RetainPtr<CPDF_Dictionary> form_font_resources =
-      CPDF_PageResourceEditor::EnsureLocalResourceSubdict(doc, form_resources,
-                                                          "Font");
-  if (!form_ext_gstate_resources || !form_font_resources) {
-    FPDFFont_Close(font_handle);
-    return false;
-  }
-
-  CPDF_Form form_holder(doc, RetainPtr<CPDF_Dictionary>(), form_stream);
-  if (form_holder.GetMutableResources().Get() != form_resources.Get()) {
-    FPDFFont_Close(font_handle);
-    return false;
-  }
-
-  CPDF_TextObject text_object;
-  text_object.SetDefaultStates();
-  text_object.mutable_text_state().SetFont(pdfium::WrapRetain(font));
-  text_object.mutable_text_state().SetFontSize(params.font_size);
-  text_object.SetText(encoded_text);
-  text_object.SetTextMatrix(
-      CFX_Matrix(1, 0, 0, 1, params.text_x, params.text_y));
-
-  std::vector<float> fill_color = {params.fill_R / 255.f,
-                                   params.fill_G / 255.f,
-                                   params.fill_B / 255.f};
-  text_object.mutable_color_state().SetFillColor(
-      CPDF_ColorSpace::GetStockCS(CPDF_ColorSpace::Family::kDeviceRGB),
-      std::move(fill_color));
-  text_object.mutable_general_state().SetFillAlpha(params.alpha);
-  text_object.mutable_general_state().SetStrokeAlpha(params.alpha);
-
-  CPDF_PageContentGenerator form_generator(&form_holder);
-  ByteString form_content =
-      form_generator.GenerateAppendOnlyTextObjectStream(&text_object);
-  if (form_content.IsEmpty()) {
-    FPDFFont_Close(font_handle);
-    return false;
-  }
-  form_stream->SetData(form_content.unsigned_span());
 
   RetainPtr<CPDF_Dictionary> page_resources =
       CPDF_PageResourceEditor::EnsurePageLocalResources(doc, pdf_page);
@@ -1772,11 +1819,8 @@ EPDFPage_AppendReusableUnicodeTextStampXObjectWithEmbeddedFontProbe(
     return false;
   }
 
-  std::vector<CFX_Matrix> placement_matrices;
-  placement_matrices.reserve(placement_count);
-  for (uint32_t i = 0; i < placement_count; ++i) {
-    placement_matrices.push_back(CFXMatrixFromFSMatrix(placements[i]));
-  }
+  std::vector<CFX_Matrix> placement_matrices =
+      ConvertPlacementMatrices(placements, placement_count);
 
   ReusableTextStampParams params = {
       document,     page,   text,   stamp_width, stamp_height,
@@ -1816,11 +1860,8 @@ EPDFPage_AppendReusableUnicodeTextStampXObjectWithStandardFontProbe(
     return false;
   }
 
-  std::vector<CFX_Matrix> placement_matrices;
-  placement_matrices.reserve(placement_count);
-  for (uint32_t i = 0; i < placement_count; ++i) {
-    placement_matrices.push_back(CFXMatrixFromFSMatrix(placements[i]));
-  }
+  std::vector<CFX_Matrix> placement_matrices =
+      ConvertPlacementMatrices(placements, placement_count);
 
   ReusableTextStampParams params = {
       document,     page,   text,   stamp_width, stamp_height,
@@ -2030,7 +2071,12 @@ EPDFTextObj_CreateReusableUnicodeTextFormXObjectProbe(
     float alpha) {
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
   CPDF_Font* font = CPDFFontFromFPDFFont(font_handle);
-  if (!doc || !font || font->GetDocument() != doc || !text ||
+  // Base14 stock fonts are intentionally created with a null document by
+  // CPDF_Font::GetStockFont(). Other font types retain their owning document.
+  const bool font_is_usable_in_document =
+      font && (font->GetDocument() == doc ||
+               (!font->GetDocument() && font->IsStandardFont()));
+  if (!doc || !font_is_usable_in_document || !text ||
       !std::isfinite(stamp_width) || !std::isfinite(stamp_height) ||
       !std::isfinite(text_x) || !std::isfinite(text_y) ||
       !std::isfinite(font_size) || !std::isfinite(alpha) ||
@@ -2048,73 +2094,24 @@ EPDFTextObj_CreateReusableUnicodeTextFormXObjectProbe(
     return 0;
   }
 
-  auto form_dict = doc->New<CPDF_Dictionary>();
-  form_dict->SetNewFor<CPDF_Name>("Type", "XObject");
-  form_dict->SetNewFor<CPDF_Name>("Subtype", "Form");
-  form_dict->SetNewFor<CPDF_Number>("FormType", 1);
-  form_dict->SetRectFor("BBox", CFX_FloatRect(0, 0, stamp_width, stamp_height));
-  form_dict->SetMatrixFor("Matrix", CFX_Matrix());
-  RetainPtr<CPDF_Dictionary> resources =
-      form_dict->SetNewFor<CPDF_Dictionary>("Resources");
-  RetainPtr<CPDF_Stream> form_stream =
-      doc->NewIndirect<CPDF_Stream>(std::move(form_dict));
-  if (!resources || !form_stream ||
-      !CPDF_PageResourceEditor::EnsureLocalResourceSubdict(doc, resources,
-                                                           "ExtGState") ||
-      !CPDF_PageResourceEditor::EnsureLocalResourceSubdict(doc, resources,
-                                                           "Font")) {
-    return 0;
-  }
-
-  CPDF_Form form_holder(doc, RetainPtr<CPDF_Dictionary>(), form_stream);
-  if (form_holder.GetMutableResources().Get() != resources.Get()) {
-    return 0;
-  }
-
-  CPDF_TextObject text_object;
-  text_object.SetDefaultStates();
-  text_object.mutable_text_state().SetFont(pdfium::WrapRetain(font));
-  text_object.mutable_text_state().SetFontSize(font_size);
-  text_object.SetText(encoded_text);
-  text_object.SetTextMatrix(CFX_Matrix(1, 0, 0, 1, text_x, text_y));
-  text_object.mutable_color_state().SetFillColor(
-      CPDF_ColorSpace::GetStockCS(CPDF_ColorSpace::Family::kDeviceRGB),
-      {fill_R / 255.f, fill_G / 255.f, fill_B / 255.f});
-  text_object.mutable_general_state().SetFillAlpha(alpha);
-  text_object.mutable_general_state().SetStrokeAlpha(alpha);
-
-  CPDF_PageContentGenerator generator(&form_holder);
-  ByteString content =
-      generator.GenerateAppendOnlyTextObjectStream(&text_object);
-  if (content.IsEmpty()) {
-    return 0;
-  }
-  form_stream->SetData(content.unsigned_span());
-  return form_stream->GetObjNum();
+  RetainPtr<CPDF_Stream> form_stream = NewReusableUnicodeTextForm(
+      doc, font, encoded_text,
+      {stamp_width, stamp_height, text_x, text_y, font_size, fill_R, fill_G,
+       fill_B, alpha});
+  return form_stream ? form_stream->GetObjNum() : 0;
 }
 
-FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
-EPDFPage_AppendReusableFormXObjectProbe(FPDF_DOCUMENT document,
-                                        FPDF_PAGE page,
-                                        uint32_t form_object_number,
-                                        const FS_MATRIX* placements,
-                                        uint32_t placement_count) {
-  if (!placements || placement_count == 0) {
-    return false;
-  }
-  std::vector<CFX_Matrix> matrices;
-  matrices.reserve(placement_count);
-  for (uint32_t i = 0; i < placement_count; ++i) {
-    matrices.push_back(CFXMatrixFromFSMatrix(placements[i]));
-    if (!IsValidPlacementMatrix(matrices.back())) {
-      return false;
-    }
-  }
-
+bool AppendReusableFormXObjectWithPlacementsInternal(
+    FPDF_DOCUMENT document,
+    FPDF_PAGE page,
+    uint32_t form_object_number,
+    const std::vector<CFX_Matrix>& placements) {
   CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
   CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page);
   if (!doc || !IsPageObject(pdf_page) || pdf_page->GetDocument() != doc ||
-      !IsReusableFormXObject(doc, form_object_number)) {
+      !IsReusableFormXObject(doc, form_object_number) || placements.empty() ||
+      !std::all_of(placements.begin(), placements.end(),
+                   IsValidPlacementMatrix)) {
     return false;
   }
   RetainPtr<CPDF_Dictionary> page_dict = pdf_page->GetMutableDict();
@@ -2146,8 +2143,22 @@ EPDFPage_AppendReusableFormXObjectProbe(FPDF_DOCUMENT document,
       doc, page_dict, old_content_object_numbers,
       [&]() {
         return NewReusableTextStampPlacementContentStream(
-            doc, name.AsStringView(), matrices);
+            doc, name.AsStringView(), placements);
       });
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendReusableFormXObjectProbe(FPDF_DOCUMENT document,
+                                        FPDF_PAGE page,
+                                        uint32_t form_object_number,
+                                        const FS_MATRIX* placements,
+                                        uint32_t placement_count) {
+  if (!placements || placement_count == 0) {
+    return false;
+  }
+  return AppendReusableFormXObjectWithPlacementsInternal(
+      document, page, form_object_number,
+      ConvertPlacementMatrices(placements, placement_count));
 }
 
 FPDF_EXPORT uint32_t FPDF_CALLCONV
@@ -2253,11 +2264,8 @@ EPDFPage_AppendReusableImageXObjectProbe(FPDF_DOCUMENT document,
     return false;
   }
 
-  std::vector<CFX_Matrix> placement_matrices;
-  placement_matrices.reserve(placement_count);
-  for (uint32_t i = 0; i < placement_count; ++i) {
-    placement_matrices.push_back(CFXMatrixFromFSMatrix(placements[i]));
-  }
+  std::vector<CFX_Matrix> placement_matrices =
+      ConvertPlacementMatrices(placements, placement_count);
 
   return AppendReusableImageXObjectWithPlacementsInternal(
       document, page, image_object_number, placement_matrices, alpha);

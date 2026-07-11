@@ -692,7 +692,9 @@ EPDFPage_AppendIsolatedRgbaImageProbeWithXObject(FPDF_DOCUMENT document,
 // |font| after this call.
 //
 //   document     - The document in which to create the Form XObject.
-//   font         - A valid font handle loaded into |document|.
+//   font         - A valid font handle loaded into |document|. Base14 stock
+//                  fonts are accepted even though PDFium internally stores
+//                  them without an intrinsic document pointer.
 //   text         - NUL-terminated UTF-16LE text. Must not be NULL or empty.
 //   stamp_width  - Width of the Form bounding box. Must be finite and positive.
 //   stamp_height - Height of the Form bounding box. Must be finite and positive.

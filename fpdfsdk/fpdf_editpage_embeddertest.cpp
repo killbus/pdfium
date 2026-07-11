@@ -11,14 +11,19 @@
 #include <vector>
 
 #include "constants/page_object.h"
+#include "core/fpdfapi/font/cpdf_font.h"
 #include "core/fpdfapi/page/cpdf_page.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_reference.h"
+#include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fxcrt/fx_system.h"
 #include "core/fxcrt/numerics/safe_conversions.h"
 #include "core/fxge/cfx_defaultrenderdevice.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
+#include "public/fpdf_annot.h"
+#include "public/fpdf_text.h"
 #include "testing/embedder_test.h"
 #include "testing/embedder_test_constants.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -29,6 +34,48 @@ using ::testing::Each;
 using ::testing::Eq;
 using ::testing::FloatEq;
 using ::testing::Gt;
+
+namespace {
+
+RetainPtr<const CPDF_Dictionary> GetFormResources(CPDF_Document* document,
+                                                  uint32_t object_number) {
+  RetainPtr<const CPDF_Stream> form =
+      ToStream(document->GetOrParseIndirectObject(object_number));
+  return form ? form->GetDict()->GetDictFor("Resources") : nullptr;
+}
+
+uint32_t GetOnlyFormFontObjectNumber(CPDF_Document* document,
+                                     uint32_t object_number) {
+  RetainPtr<const CPDF_Dictionary> resources =
+      GetFormResources(document, object_number);
+  RetainPtr<const CPDF_Dictionary> fonts =
+      resources ? resources->GetDictFor("Font") : nullptr;
+  if (!fonts || fonts->size() != 1u) {
+    return 0;
+  }
+  RetainPtr<const CPDF_Object> font =
+      fonts->GetDirectObjectFor(fonts->GetKeys().front());
+  return font ? font->GetObjNum() : 0;
+}
+
+bool PageReferencesForm(CPDF_Page* page, uint32_t object_number) {
+  RetainPtr<const CPDF_Dictionary> resources = page->GetResources();
+  RetainPtr<const CPDF_Dictionary> xobjects =
+      resources ? resources->GetDictFor("XObject") : nullptr;
+  if (!xobjects) {
+    return false;
+  }
+  for (const ByteString& key : xobjects->GetKeys()) {
+    RetainPtr<const CPDF_Reference> reference =
+        ToReference(xobjects->GetObjectFor(key));
+    if (reference && reference->GetRefObjNum() == object_number) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
 
 class FPDFEditPageEmbedderTest : public EmbedderTest {};
 
@@ -89,6 +136,8 @@ TEST_F(FPDFEditPageEmbedderTest, ReusableTextFormCanBeSharedAcrossPages) {
   ASSERT_TRUE(second);
   ScopedFPDFFont font(FPDFText_LoadStandardFont(document(), "Helvetica"));
   ASSERT_TRUE(font);
+  ASSERT_TRUE(CPDFFontFromFPDFFont(font.get())->IsStandardFont());
+  EXPECT_EQ(nullptr, CPDFFontFromFPDFFont(font.get())->GetDocument());
   static constexpr FPDF_WCHAR kText[] = {'A', 0};
 
   CPDF_Document* pdf_document = CPDFDocumentFromFPDFDocument(document());
@@ -120,6 +169,87 @@ TEST_F(FPDFEditPageEmbedderTest, ReusableTextFormCanBeSharedAcrossPages) {
       pdf_document->GetOrParseIndirectObject(form_object_number));
   ASSERT_TRUE(form);
   EXPECT_EQ("Form", form->GetDict()->GetNameFor("Subtype"));
+  RetainPtr<const CPDF_Dictionary> form_resources =
+      GetFormResources(pdf_document, form_object_number);
+  ASSERT_TRUE(form_resources);
+  ASSERT_TRUE(form_resources->GetDictFor("Font"));
+  ASSERT_TRUE(form_resources->GetDictFor("ExtGState"));
+  EXPECT_EQ(1u, form_resources->GetDictFor("Font")->size());
+  EXPECT_EQ(1u, form_resources->GetDictFor("ExtGState")->size());
+  EXPECT_TRUE(PageReferencesForm(first_page, form_object_number));
+  EXPECT_TRUE(PageReferencesForm(second_page, form_object_number));
+  EXPECT_EQ(0, FPDFPage_GetAnnotCount(first.get()));
+  EXPECT_EQ(0, FPDFPage_GetAnnotCount(second.get()));
+}
+
+TEST_F(FPDFEditPageEmbedderTest,
+       ReusableTextFormsRetainSharedEmbeddedFontAfterClose) {
+  CreateEmptyDocument();
+  ScopedFPDFPage page(FPDFPage_New(document(), 0, 612, 792));
+  ASSERT_TRUE(page);
+  const std::vector<uint8_t> font_data = GetFileContents(
+      PathService::GetTestFilePath("fonts/ahem/Ahem.ttf").c_str());
+  ASSERT_FALSE(font_data.empty());
+  ScopedFPDFFont font(FPDFText_LoadFont(
+      document(), font_data.data(),
+      pdfium::checked_cast<uint32_t>(font_data.size()), FPDF_FONT_TRUETYPE,
+      /*cid=*/true));
+  ASSERT_TRUE(font);
+  static constexpr FPDF_WCHAR kTexts[][2] = {{'A', 0}, {'B', 0}, {'C', 0}};
+  CPDF_Document* pdf_document = CPDFDocumentFromFPDFDocument(document());
+  ASSERT_TRUE(pdf_document);
+  std::array<uint32_t, 3> forms;
+  std::array<uint32_t, 3> font_objects;
+  for (size_t i = 0; i < forms.size(); ++i) {
+    forms[i] = EPDFTextObj_CreateReusableUnicodeTextFormXObjectProbe(
+        document(), font.get(), kTexts[i], 100, 40, 5, 10, 12, 0, 0, 0, 1);
+    ASSERT_GT(forms[i], 0u);
+    font_objects[i] = GetOnlyFormFontObjectNumber(pdf_document, forms[i]);
+    ASSERT_GT(font_objects[i], 0u);
+    const FS_MATRIX placement = {1, 0, 0, 1, 10 + 40.0f * i, 10};
+    ASSERT_TRUE(EPDFPage_AppendReusableFormXObjectProbe(
+        document(), page.get(), forms[i], &placement, 1));
+  }
+  EXPECT_THAT(font_objects, Each(Eq(font_objects.front())));
+  EXPECT_EQ(0, FPDFPage_GetAnnotCount(page.get()));
+  font.reset();
+  ASSERT_TRUE(FPDF_SaveAsCopy(document(), this, 0));
+  ASSERT_TRUE(OpenSavedDocument());
+  ScopedSavedPage saved_page = LoadScopedSavedPage(0);
+  ASSERT_TRUE(saved_page);
+  EXPECT_TRUE(RenderSavedPage(saved_page.get()));
+  EXPECT_EQ(0, FPDFPage_GetAnnotCount(saved_page.get()));
+  ScopedFPDFTextPage text_page(FPDFText_LoadPage(saved_page.get()));
+  ASSERT_TRUE(text_page);
+  ASSERT_EQ(3, FPDFText_CountChars(text_page.get()));
+  EXPECT_EQ('A', FPDFText_GetUnicode(text_page.get(), 0));
+  EXPECT_EQ('B', FPDFText_GetUnicode(text_page.get(), 1));
+  EXPECT_EQ('C', FPDFText_GetUnicode(text_page.get(), 2));
+}
+
+TEST_F(FPDFEditPageEmbedderTest,
+       ReusableTextFormRejectsFontOwnedByDifferentDocument) {
+  CreateEmptyDocument();
+  ScopedFPDFDocument foreign_document(FPDF_CreateNewDocument());
+  ASSERT_TRUE(foreign_document);
+  const std::string font_path =
+      PathService::GetTestFilePath("fonts/ahem/Ahem.ttf");
+  const std::vector<uint8_t> font_data = GetFileContents(font_path.c_str());
+  ASSERT_FALSE(font_data.empty());
+  ScopedFPDFFont foreign_font(FPDFText_LoadFont(
+      foreign_document.get(), font_data.data(),
+      pdfium::checked_cast<uint32_t>(font_data.size()), FPDF_FONT_TRUETYPE,
+      /*cid=*/true));
+  ASSERT_TRUE(foreign_font);
+  static constexpr FPDF_WCHAR kText[] = {'A', 0};
+  CPDF_Document* pdf_document = CPDFDocumentFromFPDFDocument(document());
+  ASSERT_TRUE(pdf_document);
+  const uint32_t last_object_number = pdf_document->GetLastObjNum();
+
+  EXPECT_EQ(0u, EPDFTextObj_CreateReusableUnicodeTextFormXObjectProbe(
+                    document(), foreign_font.get(), kText, 100, 40, 5, 10,
+                    12, 0, 0, 0, 1));
+  EXPECT_EQ(last_object_number, pdf_document->GetLastObjNum());
 }
 
 TEST_F(FPDFEditPageEmbedderTest, ReusableTextFormRejectsInvalidInputs) {
@@ -139,8 +269,34 @@ TEST_F(FPDFEditPageEmbedderTest, ReusableTextFormRejectsInvalidInputs) {
   EXPECT_EQ(0u, EPDFTextObj_CreateReusableUnicodeTextFormXObjectProbe(
                     document(), font.get(), nullptr, 100, 40, 5, 10, 12, 0,
                     0, 0, 1));
+  static constexpr FPDF_WCHAR kEmptyText[] = {0};
+  EXPECT_EQ(0u, EPDFTextObj_CreateReusableUnicodeTextFormXObjectProbe(
+                    document(), font.get(), kEmptyText, 100, 40, 5, 10, 12,
+                    0, 0, 0, 1));
+  EXPECT_EQ(0u, EPDFTextObj_CreateReusableUnicodeTextFormXObjectProbe(
+                    document(), font.get(), kText, 0, 40, 5, 10, 12, 0, 0, 0,
+                    1));
+  EXPECT_EQ(0u, EPDFTextObj_CreateReusableUnicodeTextFormXObjectProbe(
+                    document(), font.get(), kText, 100, 40,
+                    std::numeric_limits<float>::infinity(), 10, 12, 0, 0, 0,
+                    1));
+  EXPECT_EQ(0u, EPDFTextObj_CreateReusableUnicodeTextFormXObjectProbe(
+                    document(), font.get(), kText, 100, 40, 5, 10, 0, 0, 0,
+                    0, 1));
+  EXPECT_EQ(0u, EPDFTextObj_CreateReusableUnicodeTextFormXObjectProbe(
+                    document(), font.get(), kText, 100, 40, 5, 10, 12, 256,
+                    0, 0, 1));
+  EXPECT_EQ(0u, EPDFTextObj_CreateReusableUnicodeTextFormXObjectProbe(
+                    document(), font.get(), kText, 100, 40, 5, 10, 12, 0, 0,
+                    0, 1.1f));
   EXPECT_EQ(last_object_number, pdf_document->GetLastObjNum());
 
+  CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page.get());
+  ASSERT_TRUE(pdf_page);
+  EXPECT_FALSE(pdf_page->GetDict()->GetObjectFor(
+      pdfium::page_object::kContents));
+  ASSERT_TRUE(pdf_page->GetResources());
+  EXPECT_EQ(0u, pdf_page->GetResources()->size());
   const FS_MATRIX placement = {1, 0, 0, 1, 10, 10};
   EXPECT_FALSE(EPDFPage_AppendReusableFormXObjectProbe(
       document(), page.get(), 0, &placement, 1));
@@ -151,6 +307,16 @@ TEST_F(FPDFEditPageEmbedderTest, ReusableTextFormRejectsInvalidInputs) {
       EPDFTextObj_CreateReusableUnicodeTextFormXObjectProbe(
           document(), font.get(), kText, 100, 40, 5, 10, 12, 0, 0, 0, 1);
   ASSERT_GT(form_object_number, 0u);
+  ScopedFPDFDocument foreign_document(FPDF_CreateNewDocument());
+  ASSERT_TRUE(foreign_document);
+  ScopedFPDFPage foreign_page(
+      FPDFPage_New(foreign_document.get(), 0, 612, 792));
+  ASSERT_TRUE(foreign_page);
+  EXPECT_FALSE(EPDFPage_AppendReusableFormXObjectProbe(
+      document(), foreign_page.get(), form_object_number, &placement, 1));
+  EXPECT_FALSE(EPDFPage_AppendReusableFormXObjectProbe(
+      foreign_document.get(), page.get(), form_object_number, &placement, 1));
+
   const FS_MATRIX invalid_placement = {1, 0, 0, 1,
                                        std::numeric_limits<float>::infinity(),
                                        10};
@@ -160,12 +326,19 @@ TEST_F(FPDFEditPageEmbedderTest, ReusableTextFormRejectsInvalidInputs) {
       document(), page.get(), form_object_number, nullptr, 1));
   EXPECT_FALSE(EPDFPage_AppendReusableFormXObjectProbe(
       document(), page.get(), form_object_number, &placement, 0));
+  EXPECT_FALSE(pdf_page->GetDict()->GetObjectFor(
+      pdfium::page_object::kContents));
+  ASSERT_TRUE(pdf_page->GetResources());
+  EXPECT_EQ(0u, pdf_page->GetResources()->size());
 
   RetainPtr<CPDF_Dictionary> non_form =
       pdf_document->NewIndirect<CPDF_Dictionary>();
   ASSERT_TRUE(non_form);
   EXPECT_FALSE(EPDFPage_AppendReusableFormXObjectProbe(
       document(), page.get(), non_form->GetObjNum(), &placement, 1));
+  EXPECT_FALSE(pdf_page->GetDict()->GetObjectFor(
+      pdfium::page_object::kContents));
+  EXPECT_EQ(0u, pdf_page->GetResources()->size());
 }
 
 TEST_F(FPDFEditPageEmbedderTest, Rotation) {
