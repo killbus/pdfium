@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -78,6 +79,93 @@ TEST_F(FPDFEditPageEmbedderTest,
           document(), page.get(), "Helvetica", kText, 100, 40, 5, 10, 12,
           &placement, 1, 0, 0, 0, 1));
   EXPECT_EQ(last_object_number, pdf_document->GetLastObjNum());
+}
+
+TEST_F(FPDFEditPageEmbedderTest, ReusableTextFormCanBeSharedAcrossPages) {
+  CreateEmptyDocument();
+  ScopedFPDFPage first(FPDFPage_New(document(), 0, 612, 792));
+  ScopedFPDFPage second(FPDFPage_New(document(), 1, 612, 792));
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(second);
+  ScopedFPDFFont font(FPDFText_LoadStandardFont(document(), "Helvetica"));
+  ASSERT_TRUE(font);
+  static constexpr FPDF_WCHAR kText[] = {'A', 0};
+
+  CPDF_Document* pdf_document = CPDFDocumentFromFPDFDocument(document());
+  ASSERT_TRUE(pdf_document);
+  const uint32_t before_create = pdf_document->GetLastObjNum();
+  const uint32_t form_object_number =
+      EPDFTextObj_CreateReusableUnicodeTextFormXObjectProbe(
+          document(), font.get(), kText, 100, 40, 5, 10, 12, 0, 0, 0, 1);
+  ASSERT_GT(form_object_number, 0u);
+  EXPECT_GT(pdf_document->GetLastObjNum(), before_create);
+  CPDF_Page* first_page = CPDFPageFromFPDFPage(first.get());
+  CPDF_Page* second_page = CPDFPageFromFPDFPage(second.get());
+  ASSERT_TRUE(first_page);
+  ASSERT_TRUE(second_page);
+  EXPECT_FALSE(first_page->GetDict()->GetObjectFor(
+      pdfium::page_object::kContents));
+  EXPECT_FALSE(second_page->GetDict()->GetObjectFor(
+      pdfium::page_object::kContents));
+
+  const FS_MATRIX first_placements[] = {{1, 0, 0, 1, 10, 10},
+                                         {1, 0, 0, 1, 20, 20}};
+  const FS_MATRIX second_placement = {1, 0, 0, 1, 30, 30};
+  EXPECT_TRUE(EPDFPage_AppendReusableFormXObjectProbe(
+      document(), first.get(), form_object_number, first_placements, 2));
+  EXPECT_TRUE(EPDFPage_AppendReusableFormXObjectProbe(
+      document(), second.get(), form_object_number, &second_placement, 1));
+
+  RetainPtr<CPDF_Stream> form = ToStream(
+      pdf_document->GetOrParseIndirectObject(form_object_number));
+  ASSERT_TRUE(form);
+  EXPECT_EQ("Form", form->GetDict()->GetNameFor("Subtype"));
+}
+
+TEST_F(FPDFEditPageEmbedderTest, ReusableTextFormRejectsInvalidInputs) {
+  CreateEmptyDocument();
+  ScopedFPDFPage page(FPDFPage_New(document(), 0, 612, 792));
+  ASSERT_TRUE(page);
+  ScopedFPDFFont font(FPDFText_LoadStandardFont(document(), "Helvetica"));
+  ASSERT_TRUE(font);
+  static constexpr FPDF_WCHAR kText[] = {'A', 0};
+  CPDF_Document* pdf_document = CPDFDocumentFromFPDFDocument(document());
+  ASSERT_TRUE(pdf_document);
+  const uint32_t last_object_number = pdf_document->GetLastObjNum();
+
+  EXPECT_EQ(0u, EPDFTextObj_CreateReusableUnicodeTextFormXObjectProbe(
+                    document(), nullptr, kText, 100, 40, 5, 10, 12, 0, 0, 0,
+                    1));
+  EXPECT_EQ(0u, EPDFTextObj_CreateReusableUnicodeTextFormXObjectProbe(
+                    document(), font.get(), nullptr, 100, 40, 5, 10, 12, 0,
+                    0, 0, 1));
+  EXPECT_EQ(last_object_number, pdf_document->GetLastObjNum());
+
+  const FS_MATRIX placement = {1, 0, 0, 1, 10, 10};
+  EXPECT_FALSE(EPDFPage_AppendReusableFormXObjectProbe(
+      document(), page.get(), 0, &placement, 1));
+  EXPECT_FALSE(EPDFPage_AppendReusableFormXObjectProbe(
+      document(), page.get(), last_object_number + 100, &placement, 1));
+
+  const uint32_t form_object_number =
+      EPDFTextObj_CreateReusableUnicodeTextFormXObjectProbe(
+          document(), font.get(), kText, 100, 40, 5, 10, 12, 0, 0, 0, 1);
+  ASSERT_GT(form_object_number, 0u);
+  const FS_MATRIX invalid_placement = {1, 0, 0, 1,
+                                       std::numeric_limits<float>::infinity(),
+                                       10};
+  EXPECT_FALSE(EPDFPage_AppendReusableFormXObjectProbe(
+      document(), page.get(), form_object_number, &invalid_placement, 1));
+  EXPECT_FALSE(EPDFPage_AppendReusableFormXObjectProbe(
+      document(), page.get(), form_object_number, nullptr, 1));
+  EXPECT_FALSE(EPDFPage_AppendReusableFormXObjectProbe(
+      document(), page.get(), form_object_number, &placement, 0));
+
+  RetainPtr<CPDF_Dictionary> non_form =
+      pdf_document->NewIndirect<CPDF_Dictionary>();
+  ASSERT_TRUE(non_form);
+  EXPECT_FALSE(EPDFPage_AppendReusableFormXObjectProbe(
+      document(), page.get(), non_form->GetObjNum(), &placement, 1));
 }
 
 TEST_F(FPDFEditPageEmbedderTest, Rotation) {

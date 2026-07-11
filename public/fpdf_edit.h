@@ -686,6 +686,59 @@ EPDFPage_AppendIsolatedRgbaImageProbeWithXObject(FPDF_DOCUMENT document,
                                                  float draw_height,
                                                  float alpha);
 
+// Creates one reusable indirect Form XObject containing searchable Unicode
+// text using a caller-owned font loaded into |document|. This call does not
+// modify any page and does not take ownership of |font|. The caller may close
+// |font| after this call.
+//
+//   document     - The document in which to create the Form XObject.
+//   font         - A valid font handle loaded into |document|.
+//   text         - NUL-terminated UTF-16LE text. Must not be NULL or empty.
+//   stamp_width  - Width of the Form bounding box. Must be finite and positive.
+//   stamp_height - Height of the Form bounding box. Must be finite and positive.
+//   text_x       - Finite text origin x-coordinate in Form space.
+//   text_y       - Finite text origin y-coordinate in Form space.
+//   font_size    - Font size in Form-space units. Must be finite and positive.
+//   fill_R       - Red component in the range 0 to 255.
+//   fill_G       - Green component in the range 0 to 255.
+//   fill_B       - Blue component in the range 0 to 255.
+//   alpha        - Fill opacity in the range 0.0 to 1.0.
+//
+// Returns the indirect Form object number on success, or 0 on failure.
+FPDF_EXPORT uint32_t FPDF_CALLCONV
+EPDFTextObj_CreateReusableUnicodeTextFormXObjectProbe(
+    FPDF_DOCUMENT document,
+    FPDF_FONT font,
+    FPDF_WIDESTRING text,
+    float stamp_width,
+    float stamp_height,
+    float text_x,
+    float text_y,
+    float font_size,
+    unsigned int fill_R,
+    unsigned int fill_G,
+    unsigned int fill_B,
+    float alpha);
+
+// Appends placements of an existing indirect Form XObject to |page|. The Form
+// and page must belong to |document|. Existing page contents are preserved
+// through the isolated append-stream structure. The page must be reloaded
+// before it is rendered after this call.
+//
+//   document           - The document containing |page| and the Form.
+//   page               - The page to modify.
+//   form_object_number - Indirect object number of a Form XObject.
+//   placements         - Array of finite placement matrices.
+//   placement_count    - Number of matrices. Must be greater than zero.
+//
+// Returns TRUE on success, or FALSE on failure.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendReusableFormXObjectProbe(FPDF_DOCUMENT document,
+                                        FPDF_PAGE page,
+                                        uint32_t form_object_number,
+                                        const FS_MATRIX* placements,
+                                        uint32_t placement_count);
+
 // Create a reusable raw RGBA Image XObject in |document|. The image is encoded
 // as a DeviceRGB image stream with a DeviceGray /SMask alpha image stream,
 // matching EPDFPage_AppendIsolatedRgbaImageProbeWithXObject's alpha semantics.

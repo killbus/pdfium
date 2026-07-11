@@ -2003,6 +2003,153 @@ EPDFPage_AppendIsolatedRgbaImageProbeWithXObject(FPDF_DOCUMENT document,
       });
 }
 
+bool IsReusableFormXObject(CPDF_Document* doc, uint32_t object_number) {
+  if (!doc || object_number == 0) {
+    return false;
+  }
+  RetainPtr<CPDF_Stream> stream =
+      ToStream(doc->GetOrParseIndirectObject(object_number));
+  RetainPtr<const CPDF_Dictionary> dict = stream ? stream->GetDict() : nullptr;
+  return dict && dict->GetNameFor("Type") == "XObject" &&
+         dict->GetNameFor("Subtype") == "Form";
+}
+
+FPDF_EXPORT uint32_t FPDF_CALLCONV
+EPDFTextObj_CreateReusableUnicodeTextFormXObjectProbe(
+    FPDF_DOCUMENT document,
+    FPDF_FONT font_handle,
+    FPDF_WIDESTRING text,
+    float stamp_width,
+    float stamp_height,
+    float text_x,
+    float text_y,
+    float font_size,
+    unsigned int fill_R,
+    unsigned int fill_G,
+    unsigned int fill_B,
+    float alpha) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  CPDF_Font* font = CPDFFontFromFPDFFont(font_handle);
+  if (!doc || !font || font->GetDocument() != doc || !text ||
+      !std::isfinite(stamp_width) || !std::isfinite(stamp_height) ||
+      !std::isfinite(text_x) || !std::isfinite(text_y) ||
+      !std::isfinite(font_size) || !std::isfinite(alpha) ||
+      stamp_width <= 0.0f || stamp_height <= 0.0f || font_size <= 0.0f ||
+      fill_R > 255 || fill_G > 255 || fill_B > 255 || alpha < 0.0f ||
+      alpha > 1.0f) {
+    return 0;
+  }
+
+  WideString wide_text =
+      UNSAFE_BUFFERS(WideStringFromFPDFWideString(text));
+  ByteString encoded_text;
+  if (wide_text.IsEmpty() ||
+      !EncodeUnicodeTextWithFont(wide_text, font, &encoded_text)) {
+    return 0;
+  }
+
+  auto form_dict = doc->New<CPDF_Dictionary>();
+  form_dict->SetNewFor<CPDF_Name>("Type", "XObject");
+  form_dict->SetNewFor<CPDF_Name>("Subtype", "Form");
+  form_dict->SetNewFor<CPDF_Number>("FormType", 1);
+  form_dict->SetRectFor("BBox", CFX_FloatRect(0, 0, stamp_width, stamp_height));
+  form_dict->SetMatrixFor("Matrix", CFX_Matrix());
+  RetainPtr<CPDF_Dictionary> resources =
+      form_dict->SetNewFor<CPDF_Dictionary>("Resources");
+  RetainPtr<CPDF_Stream> form_stream =
+      doc->NewIndirect<CPDF_Stream>(std::move(form_dict));
+  if (!resources || !form_stream ||
+      !CPDF_PageResourceEditor::EnsureLocalResourceSubdict(doc, resources,
+                                                           "ExtGState") ||
+      !CPDF_PageResourceEditor::EnsureLocalResourceSubdict(doc, resources,
+                                                           "Font")) {
+    return 0;
+  }
+
+  CPDF_Form form_holder(doc, RetainPtr<CPDF_Dictionary>(), form_stream);
+  if (form_holder.GetMutableResources().Get() != resources.Get()) {
+    return 0;
+  }
+
+  CPDF_TextObject text_object;
+  text_object.SetDefaultStates();
+  text_object.mutable_text_state().SetFont(pdfium::WrapRetain(font));
+  text_object.mutable_text_state().SetFontSize(font_size);
+  text_object.SetText(encoded_text);
+  text_object.SetTextMatrix(CFX_Matrix(1, 0, 0, 1, text_x, text_y));
+  text_object.mutable_color_state().SetFillColor(
+      CPDF_ColorSpace::GetStockCS(CPDF_ColorSpace::Family::kDeviceRGB),
+      {fill_R / 255.f, fill_G / 255.f, fill_B / 255.f});
+  text_object.mutable_general_state().SetFillAlpha(alpha);
+  text_object.mutable_general_state().SetStrokeAlpha(alpha);
+
+  CPDF_PageContentGenerator generator(&form_holder);
+  ByteString content =
+      generator.GenerateAppendOnlyTextObjectStream(&text_object);
+  if (content.IsEmpty()) {
+    return 0;
+  }
+  form_stream->SetData(content.unsigned_span());
+  return form_stream->GetObjNum();
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendReusableFormXObjectProbe(FPDF_DOCUMENT document,
+                                        FPDF_PAGE page,
+                                        uint32_t form_object_number,
+                                        const FS_MATRIX* placements,
+                                        uint32_t placement_count) {
+  if (!placements || placement_count == 0) {
+    return false;
+  }
+  std::vector<CFX_Matrix> matrices;
+  matrices.reserve(placement_count);
+  for (uint32_t i = 0; i < placement_count; ++i) {
+    matrices.push_back(CFXMatrixFromFSMatrix(placements[i]));
+    if (!IsValidPlacementMatrix(matrices.back())) {
+      return false;
+    }
+  }
+
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page);
+  if (!doc || !IsPageObject(pdf_page) || pdf_page->GetDocument() != doc ||
+      !IsReusableFormXObject(doc, form_object_number)) {
+    return false;
+  }
+  RetainPtr<CPDF_Dictionary> page_dict = pdf_page->GetMutableDict();
+  if (!page_dict) {
+    return false;
+  }
+  std::vector<uint32_t> old_content_object_numbers;
+  if (!CollectOriginalContentRefs(
+          page_dict->GetMutableObjectFor(pdfium::page_object::kContents),
+          &old_content_object_numbers)) {
+    return false;
+  }
+  RetainPtr<CPDF_Dictionary> resources =
+      CPDF_PageResourceEditor::EnsurePageLocalResources(doc, pdf_page);
+  RetainPtr<CPDF_Dictionary> xobjects =
+      resources ? CPDF_PageResourceEditor::EnsureLocalResourceSubdict(
+                      doc, resources, "XObject")
+                : nullptr;
+  if (!xobjects) {
+    return false;
+  }
+  ByteString name =
+      CPDF_PageResourceEditor::AllocateUniqueResourceName(xobjects, "WM");
+  if (name.IsEmpty()) {
+    return false;
+  }
+  xobjects->SetNewFor<CPDF_Reference>(name, doc, form_object_number);
+  return ReplacePageContentsWithIsolatedAppendStream(
+      doc, page_dict, old_content_object_numbers,
+      [&]() {
+        return NewReusableTextStampPlacementContentStream(
+            doc, name.AsStringView(), matrices);
+      });
+}
+
 FPDF_EXPORT uint32_t FPDF_CALLCONV
 EPDFImageObj_CreateReusableRgbaImageXObjectProbe(FPDF_DOCUMENT document,
                                                  const uint8_t* rgba_data,
