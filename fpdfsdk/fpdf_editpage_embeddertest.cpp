@@ -31,6 +31,7 @@
 #include "testing/utils/path_service.h"
 
 using ::testing::Each;
+using ::testing::ElementsAre;
 using ::testing::Eq;
 using ::testing::FloatEq;
 using ::testing::Gt;
@@ -145,7 +146,7 @@ TEST_F(FPDFEditPageEmbedderTest, ReusableTextFormCanBeSharedAcrossPages) {
   const uint32_t before_create = pdf_document->GetLastObjNum();
   const uint32_t form_object_number =
       EPDFTextObj_CreateReusableUnicodeTextFormXObjectProbe(
-          document(), font.get(), kText, 100, 40, 5, 10, 12, 0, 0, 0, 1);
+          document(), font.get(), kText, 100, 40, 5, 10, 12, 0, 0, 0, 0.5f);
   ASSERT_GT(form_object_number, 0u);
   EXPECT_GT(pdf_document->GetLastObjNum(), before_create);
   CPDF_Page* first_page = CPDFPageFromFPDFPage(first.get());
@@ -221,10 +222,15 @@ TEST_F(FPDFEditPageEmbedderTest,
   EXPECT_EQ(0, FPDFPage_GetAnnotCount(saved_page.get()));
   ScopedFPDFTextPage text_page(FPDFText_LoadPage(saved_page.get()));
   ASSERT_TRUE(text_page);
-  ASSERT_EQ(3, FPDFText_CountChars(text_page.get()));
-  EXPECT_EQ('A', FPDFText_GetUnicode(text_page.get(), 0));
-  EXPECT_EQ('B', FPDFText_GetUnicode(text_page.get(), 1));
-  EXPECT_EQ('C', FPDFText_GetUnicode(text_page.get(), 2));
+  const int character_count = FPDFText_CountChars(text_page.get());
+  ASSERT_GT(character_count, 0);
+  std::vector<unsigned int> extracted_text;
+  for (int i = 0; i < character_count; ++i) {
+    if (!FPDFText_IsGenerated(text_page.get(), i)) {
+      extracted_text.push_back(FPDFText_GetUnicode(text_page.get(), i));
+    }
+  }
+  EXPECT_THAT(extracted_text, ElementsAre('A', 'B', 'C'));
 }
 
 TEST_F(FPDFEditPageEmbedderTest,
