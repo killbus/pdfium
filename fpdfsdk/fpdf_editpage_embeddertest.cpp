@@ -54,7 +54,7 @@ uint32_t GetOnlyFormFontObjectNumber(CPDF_Document* document,
     return 0;
   }
   RetainPtr<const CPDF_Object> font =
-      fonts->GetDirectObjectFor(fonts->GetKeys().front());
+      fonts->GetDirectObjectFor(fonts->GetKeys().front().AsStringView());
   return font ? font->GetObjNum() : 0;
 }
 
@@ -67,7 +67,7 @@ bool PageReferencesForm(CPDF_Page* page, uint32_t object_number) {
   }
   for (const ByteString& key : xobjects->GetKeys()) {
     RetainPtr<const CPDF_Reference> reference =
-        ToReference(xobjects->GetObjectFor(key));
+        ToReference(xobjects->GetObjectFor(key.AsStringView()));
     if (reference && reference->GetRefObjNum() == object_number) {
       return true;
     }
