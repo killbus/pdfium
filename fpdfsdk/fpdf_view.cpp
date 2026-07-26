@@ -7,6 +7,8 @@
 #include "public/fpdfview.h"
 
 #include <algorithm>
+#include <cmath>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -731,6 +733,165 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_GetPageBoundingBox(FPDF_PAGE page,
   return true;
 }
 
+namespace {
+
+bool IsValidBitmapPlacement(const CFX_Matrix& matrix) {
+  if (!std::isfinite(matrix.a) || !std::isfinite(matrix.b) ||
+      !std::isfinite(matrix.c) || !std::isfinite(matrix.d) ||
+      !std::isfinite(matrix.e) || !std::isfinite(matrix.f)) {
+    return false;
+  }
+
+  const float determinant = matrix.a * matrix.d - matrix.b * matrix.c;
+  return std::isfinite(determinant) && determinant != 0.0f;
+}
+
+bool IsValidRgbaBitmapInput(const uint8_t* rgba_data,
+                            unsigned long rgba_size,
+                            int image_width,
+                            int image_height) {
+  if (!rgba_data || image_width <= 0 || image_height <= 0) {
+    return false;
+  }
+
+  FX_SAFE_SIZE_T expected_size = image_width;
+  expected_size *= image_height;
+  expected_size *= 4;
+  return expected_size.IsValid() && expected_size.ValueOrDie() == rgba_size;
+}
+
+RetainPtr<CFX_DIBitmap> CreateBgraBitmapFromRgba(const uint8_t* rgba_data,
+                                                 unsigned long rgba_size,
+                                                 int image_width,
+                                                 int image_height) {
+  RetainPtr<CFX_DIBitmap> bitmap = pdfium::MakeRetain<CFX_DIBitmap>();
+  if (!bitmap->Create(image_width, image_height, FXDIB_Format::kBgra)) {
+    return nullptr;
+  }
+
+  // SAFETY: The public API contract requires `rgba_data` to point to exactly
+  // `rgba_size` readable bytes, validated by IsValidRgbaBitmapInput().
+  pdfium::span<const uint8_t> source =
+      UNSAFE_BUFFERS(pdfium::span(rgba_data, rgba_size));
+  const size_t row_size = static_cast<size_t>(image_width) * 4;
+  for (int row = 0; row < image_height; ++row) {
+    pdfium::span<const uint8_t> source_row =
+        source.subspan(static_cast<size_t>(row) * row_size, row_size);
+    pdfium::span<uint8_t> destination_row =
+        bitmap->GetWritableScanline(row).first(row_size);
+    for (size_t offset = 0; offset < row_size; offset += 4) {
+      destination_row[offset] = source_row[offset + 2];
+      destination_row[offset + 1] = source_row[offset + 1];
+      destination_row[offset + 2] = source_row[offset];
+      destination_row[offset + 3] = source_row[offset + 3];
+    }
+  }
+  return bitmap;
+}
+
+bool ValidateBitmapPlacementGeometry(CPDF_Page* page,
+                                     int start_x,
+                                     int start_y,
+                                     int size_x,
+                                     int size_y,
+                                     int rotate,
+                                     const FS_MATRIX* placements,
+                                     uint32_t placement_count,
+                                     float alpha,
+                                     CFX_Matrix* page_to_device) {
+  if (!page || size_x <= 0 || size_y <= 0 || rotate < 0 || rotate > 3 ||
+      !placements || placement_count == 0 || !std::isfinite(alpha) ||
+      alpha < 0.0f || alpha > 1.0f) {
+    return false;
+  }
+
+  FX_SAFE_INT32 right = start_x;
+  right += size_x;
+  FX_SAFE_INT32 bottom = start_y;
+  bottom += size_y;
+  if (!right.IsValid() || !bottom.IsValid()) {
+    return false;
+  }
+
+  const FX_RECT page_rect(start_x, start_y, right.ValueOrDie(),
+                          bottom.ValueOrDie());
+  *page_to_device = page->GetDisplayMatrixForRect(page_rect, rotate);
+  if (!IsValidBitmapPlacement(*page_to_device)) {
+    return false;
+  }
+
+  // Validate every placement and its composed device transform before drawing
+  // so a bad later placement cannot leave a partially modified destination.
+  // SAFETY: The public API contract requires `placements` to point to
+  // `placement_count` readable matrices.
+  pdfium::span<const FS_MATRIX> placement_span =
+      UNSAFE_BUFFERS(pdfium::span(placements, placement_count));
+  for (const FS_MATRIX& placement : placement_span) {
+    const CFX_Matrix page_placement = CFXMatrixFromFSMatrix(placement);
+    const CFX_Matrix image_to_device = page_placement * (*page_to_device);
+    if (!IsValidBitmapPlacement(page_placement) ||
+        !IsValidBitmapPlacement(image_to_device)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool BitmapBuffersOverlap(const CFX_DIBitmap* first,
+                          const CFX_DIBitmap* second) {
+  const pdfium::span<const uint8_t> first_buffer = first->GetBuffer();
+  const pdfium::span<const uint8_t> second_buffer = second->GetBuffer();
+  if (first_buffer.empty() || second_buffer.empty()) {
+    return false;
+  }
+
+  // std::less provides a strict total order even when the external buffers
+  // come from unrelated allocations.
+  const std::less<const uint8_t*> less;
+  return less(first_buffer.data(), second_buffer.end()) &&
+         less(second_buffer.data(), first_buffer.end());
+}
+
+bool DrawBitmapPlacements(RetainPtr<CFX_DIBitmap> destination,
+                          RetainPtr<const CFX_DIBBase> source,
+                          int flags,
+                          pdfium::span<const FS_MATRIX> placements,
+                          const CFX_Matrix& page_to_device,
+                          float alpha) {
+  if (alpha == 0.0f) {
+    return true;
+  }
+
+  ValidateBitmapPremultiplyState(destination);
+#if defined(PDF_USE_SKIA)
+  CFX_DIBitmap::ScopedPremultiplier scoped_premultiplier(destination);
+#endif
+  CFX_DefaultRenderDevice device;
+  if (!device.AttachWithRgbByteOrder(
+          std::move(destination), !!(flags & FPDF_REVERSE_BYTE_ORDER))) {
+    return false;
+  }
+
+  const FXDIB_ResampleOptions options;
+  for (const FS_MATRIX& placement : placements) {
+    const CFX_Matrix image_to_device =
+        CFXMatrixFromFSMatrix(placement) * page_to_device;
+    RenderDeviceDriverIface::StartResult result =
+        device.StartDIBitsWithBlend(source, alpha, /*argb=*/0, image_to_device,
+                                    options, BlendMode::kNormal);
+    if (result.result != RenderDeviceDriverIface::Result::kSuccess) {
+      return false;
+    }
+    while (result.agg_image_renderer &&
+           device.ContinueDIBits(result.agg_image_renderer.get(),
+                                 /*pPause=*/nullptr)) {
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
 #if BUILDFLAG(IS_WIN)
 namespace {
 
@@ -1026,6 +1187,94 @@ FPDF_RenderPageBitmapWithMatrix(FPDF_BITMAP bitmap,
   }
   CPDFSDK_RenderPage(context, pPage, transform_matrix, clip_rect, flags,
                      /*color_scheme=*/nullptr);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFBitmap_DrawBitmapPlacementsProbe(
+    FPDF_BITMAP destination_bitmap,
+    FPDF_BITMAP source_bitmap,
+    FPDF_PAGE page,
+    int start_x,
+    int start_y,
+    int size_x,
+    int size_y,
+    int rotate,
+    int flags,
+    const FS_MATRIX* placements,
+    uint32_t placement_count,
+    float alpha) {
+  CFX_DIBitmap* destination =
+      CFXDIBitmapFromFPDFBitmap(destination_bitmap);
+  CFX_DIBitmap* source = CFXDIBitmapFromFPDFBitmap(source_bitmap);
+  if (!destination || !source || BitmapBuffersOverlap(destination, source)) {
+    return false;
+  }
+
+  CFX_Matrix page_to_device;
+  if (!ValidateBitmapPlacementGeometry(
+          CPDFPageFromFPDFPage(page), start_x, start_y, size_x, size_y, rotate,
+          placements, placement_count, alpha, &page_to_device)) {
+    return false;
+  }
+
+  // SAFETY: ValidateBitmapPlacementGeometry() checked that the public API
+  // placement contract is valid before this span is consumed.
+  pdfium::span<const FS_MATRIX> placement_span =
+      UNSAFE_BUFFERS(pdfium::span(placements, placement_count));
+  ValidateBitmapPremultiplyState(source);
+  return DrawBitmapPlacements(RetainPtr<CFX_DIBitmap>(destination),
+                              RetainPtr<CFX_DIBitmap>(source), flags,
+                              placement_span, page_to_device, alpha);
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFBitmap_DrawRgbaPlacementsProbe(
+    FPDF_BITMAP bitmap,
+    FPDF_PAGE page,
+    int start_x,
+    int start_y,
+    int size_x,
+    int size_y,
+    int rotate,
+    int flags,
+    const uint8_t* rgba_data,
+    unsigned long rgba_size,
+    int image_width,
+    int image_height,
+    const FS_MATRIX* placements,
+    uint32_t placement_count,
+    float alpha) {
+  RetainPtr<CFX_DIBitmap> destination(CFXDIBitmapFromFPDFBitmap(bitmap));
+  if (!destination ||
+      !IsValidRgbaBitmapInput(rgba_data, rgba_size, image_width,
+                              image_height)) {
+    return false;
+  }
+
+  CFX_Matrix page_to_device;
+  if (!ValidateBitmapPlacementGeometry(
+          CPDFPageFromFPDFPage(page), start_x, start_y, size_x, size_y, rotate,
+          placements, placement_count, alpha, &page_to_device)) {
+    return false;
+  }
+
+  if (alpha == 0.0f) {
+    return true;
+  }
+
+  RetainPtr<CFX_DIBitmap> source = CreateBgraBitmapFromRgba(
+      rgba_data, rgba_size, image_width, image_height);
+  if (!source) {
+    return false;
+  }
+
+  ValidateBitmapPremultiplyState(source);
+  // SAFETY: ValidateBitmapPlacementGeometry() checked that the public API
+  // placement contract is valid before this span is consumed.
+  pdfium::span<const FS_MATRIX> placement_span =
+      UNSAFE_BUFFERS(pdfium::span(placements, placement_count));
+  return DrawBitmapPlacements(std::move(destination), std::move(source), flags,
+                              placement_span, page_to_device, alpha);
 }
 
 FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
@@ -1453,6 +1702,39 @@ EPDF_GetPageSizeByIndexNormalized(FPDF_DOCUMENT document,
   // Return original dimensions - NO swap for rotation
   size->width = bbox.Width();
   size->height = bbox.Height();
+  return true;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_DeviceToPageByIndex(FPDF_DOCUMENT document,
+                         int page_index,
+                         int start_x,
+                         int start_y,
+                         int size_x,
+                         int size_y,
+                         int rotate,
+                         int device_x,
+                         int device_y,
+                         double* page_x,
+                         double* page_y) {
+  auto* doc = CPDFDocumentFromFPDFDocument(document);
+  if (!doc || !page_x || !page_y || page_index < 0 ||
+      page_index >= FPDF_GetPageCount(document)) {
+    return false;
+  }
+  RetainPtr<CPDF_Dictionary> dict = doc->GetMutablePageDictionary(page_index);
+  if (!dict) {
+    return false;
+  }
+  auto page = pdfium::MakeRetain<CPDF_Page>(doc, std::move(dict));
+  const FX_RECT rect(start_x, start_y, start_x + size_x, start_y + size_y);
+  std::optional<CFX_PointF> pos =
+      page->DeviceToPage(rect, rotate, CFX_PointF(device_x, device_y));
+  if (!pos.has_value()) {
+    return false;
+  }
+  *page_x = pos->x;
+  *page_y = pos->y;
   return true;
 }
 

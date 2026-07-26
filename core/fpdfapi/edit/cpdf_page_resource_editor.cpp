@@ -148,6 +148,44 @@ RetainPtr<CPDF_Dictionary> CPDF_PageResourceEditor::EnsurePageLocalResources(
 }
 
 // static
+RetainPtr<CPDF_Dictionary> CPDF_PageResourceEditor::EnsurePageLocalResources(
+    CPDF_Document* doc,
+    RetainPtr<CPDF_Dictionary> page_dict,
+    RetainPtr<CPDF_Dictionary> effective_resources,
+    bool resources_are_shared) {
+  CHECK(doc);
+  CHECK(page_dict);
+
+  RetainPtr<CPDF_Object> direct_resources_object =
+      page_dict->GetMutableObjectFor(pdfium::page_object::kResources);
+  RetainPtr<CPDF_Dictionary> direct_resources =
+      GetMutableDirectDict(direct_resources_object);
+  if (!effective_resources) {
+    RetainPtr<CPDF_Dictionary> new_resources =
+        doc->NewIndirect<CPDF_Dictionary>();
+    page_dict->SetNewFor<CPDF_Reference>(pdfium::page_object::kResources, doc,
+                                         new_resources->GetObjNum());
+    return new_resources;
+  }
+
+  const bool needs_clone = !direct_resources ||
+                           direct_resources != effective_resources ||
+                           resources_are_shared;
+  if (!needs_clone) {
+    return direct_resources;
+  }
+
+  RetainPtr<CPDF_Dictionary> cloned =
+      CloneDictionaryIndirect(doc, effective_resources);
+  if (!cloned) {
+    return nullptr;
+  }
+  page_dict->SetNewFor<CPDF_Reference>(pdfium::page_object::kResources, doc,
+                                       cloned->GetObjNum());
+  return cloned;
+}
+
+// static
 RetainPtr<CPDF_Dictionary> CPDF_PageResourceEditor::EnsureLocalResourceSubdict(
     CPDF_Document* doc,
     RetainPtr<CPDF_Dictionary> resources,

@@ -7,6 +7,28 @@ readonly EXPECTED_TESTS=(
   FPDFEditPageEmbedderTest.ReusableTextFormsRetainSharedEmbeddedFontAfterClose
   FPDFEditPageEmbedderTest.ReusableTextFormRejectsFontOwnedByDifferentDocument
   FPDFEditPageEmbedderTest.ReusableTextFormRejectsInvalidInputs
+  FPDFEditPageEmbedderTest.DeviceToPageByIndexMatchesLoadedCroppedRotatedPage
+  FPDFViewEmbedderTest.BitmapRgbaPlacementsComposeWithoutMutatingPdfState
+  FPDFViewEmbedderTest.BitmapRgbaPlacementsUseLoadedPageDisplayTransform
+  FPDFViewEmbedderTest.BitmapRgbaPlacementsRejectInvalidInputBeforeDrawing
+  FPDFViewEmbedderTest.BitmapPlacementsComposeCallerOwnedSourceWithoutMutatingPdfState
+  FPDFViewEmbedderTest.BitmapPlacementsUseLoadedPageDisplayTransformAndDestinationByteOrder
+  FPDFViewEmbedderTest.BitmapPlacementsRejectInvalidInputBeforeDrawing
+  FPDFEditPageEmbedderTest.ReusableFormByIndexAppendsWithoutPageHandlesAndPersists
+  FPDFEditPageEmbedderTest.ReusableFormByIndexIsolatesAppendFromOriginalClippingState
+  FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsInvalidInputs
+  FPDFEditPageEmbedderTest.ReusableFormByIndexClonesInitiallySharedResources
+  FPDFEditPageEmbedderTest.ReusableImageByIndexAppendsWithoutPageHandleAndPersists
+  FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsMalformedContentsWithoutResourceMutation
+  FPDFEditPageEmbedderTest.ReusableFormByIndexPreservesSupportedContentsShapes
+  FPDFEditPageEmbedderTest.ReusableFormByIndexClonesInheritedAncestorResources
+  FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsCyclicParentDespiteDirectResources
+  FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsParentTypeMutationDespiteDirectResources
+  FPDFEditPageEmbedderTest.ReusableFormByIndexClonesIndirectXObjectSubdictionaryAndAvoidsCollision
+  FPDFEditPageEmbedderTest.ReusableImageByIndexClonesIndirectExtGStateSubdictionaryAndAvoidsCollision
+  FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsPageTreeMutation
+  FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsDuplicatePageDictionaryIdentity
+  FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsSameCountPageReplacement
 )
 readonly FOCUSED_TEST_FILTER=$(IFS=:; printf '%s' "${EXPECTED_TESTS[*]}")
 
@@ -22,9 +44,12 @@ fi
 
 readonly SRC=${PDFIUM_SRC:-$(git -C "$(dirname "$0")" rev-parse --show-toplevel)}
 readonly CLIENT_ROOT=${PDFIUM_CLIENT_ROOT:-$(dirname "$SRC")}
-readonly OUT=${NATIVE_OUT:-$SRC/out/native-reusable-text-preflight}
+readonly OUT=${NATIVE_OUT:-$SRC/out/native-reusable-xobject-preflight}
 readonly GCLIENT_FILE=$CLIENT_ROOT/.gclient
-readonly TEST_SOURCE=$SRC/fpdfsdk/fpdf_editpage_embeddertest.cpp
+readonly TEST_SOURCES=(
+  "$SRC/fpdfsdk/fpdf_editpage_embeddertest.cpp"
+  "$SRC/fpdfsdk/fpdf_view_embeddertest.cpp"
+)
 readonly GN_ARGS='is_debug=false is_component_build=false pdf_is_standalone=true pdf_enable_v8=false pdf_enable_xfa=false pdf_use_skia=false pdf_enable_fontations=false pdf_use_partition_alloc=false clang_use_chrome_plugins=false treat_warnings_as_errors=false use_remoteexec=false symbol_level=0'
 
 for command_name in git gclient gn autoninja; do
@@ -34,14 +59,16 @@ for command_name in git gclient gn autoninja; do
   fi
 done
 
-if [[ ! -f "$TEST_SOURCE" ]]; then
-  printf 'embedder test source is missing: %s\n' "$TEST_SOURCE" >&2
-  exit 1
-fi
+for test_source in "${TEST_SOURCES[@]}"; do
+  if [[ ! -f "$test_source" ]]; then
+    printf 'embedder test source is missing: %s\n' "$test_source" >&2
+    exit 1
+  fi
+done
 
 for qualified_test_name in "${EXPECTED_TESTS[@]}"; do
   test_name=${qualified_test_name#*.}
-  if ! grep -Fq "$test_name" "$TEST_SOURCE"; then
+  if ! grep -Fq "$test_name" "${TEST_SOURCES[@]}"; then
     printf 'expected native regression is absent from source: %s\n' \
       "$qualified_test_name" >&2
     exit 1

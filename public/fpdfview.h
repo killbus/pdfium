@@ -21,6 +21,7 @@
 // clang-format off
 
 #include <stddef.h>
+#include <stdint.h>
 
 #if defined(_WIN32) && !defined(__WINDOWS__)
 #include <windows.h>
@@ -892,6 +893,22 @@ EPDF_GetPageSizeByIndexNormalized(FPDF_DOCUMENT document,
                                    int page_index,
                                    FS_SIZEF* size);
 
+// Experimental EmbedPDF API. Lightweight page-index counterpart to
+// FPDF_DeviceToPage(). Constructs no public page handle, parses no page
+// contents, and retains no page image cache.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDF_DeviceToPageByIndex(FPDF_DOCUMENT document,
+                         int page_index,
+                         int start_x,
+                         int start_y,
+                         int size_x,
+                         int size_y,
+                         int rotate,
+                         int device_x,
+                         int device_y,
+                         double* page_x,
+                         double* page_y);
+
 // Experimental EmbedPDF API.
 // Function: EPDF_LoadPageNormalized
 //          Load a page with rotation normalized to 0 degrees.
@@ -1566,6 +1583,91 @@ FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV FPDF_GetXFAPacketContent(
     void* buffer,
     unsigned long buflen,
     unsigned long* out_buflen);
+
+// Experimental EmbedPDF Extension API.
+// Composites a caller-owned source bitmap onto a caller-owned destination
+// bitmap at one or more page-space placements. The destination bitmap is
+// normally rendered by FPDF_RenderPageBitmap() with the same page rectangle,
+// rotation, and flags.
+//
+// The source bitmap is interpreted in its native PDFium bitmap format. This
+// function mutates the destination only through the requested composition. It
+// does not mutate the source, create or mutate PDF state, retain either bitmap,
+// or retain the page after it returns. Source and destination must have
+// non-overlapping backing storage.
+//
+//   destination     - Destination bitmap handle.
+//   source          - Source bitmap handle.
+//   page            - Loaded page used only to derive the page-to-device
+//                     display matrix.
+//   start_x/start_y - Device origin used for page rendering.
+//   size_x/size_y   - Positive device size used for page rendering.
+//   rotate          - Clockwise page-render rotation in quarter turns [0, 3].
+//   flags           - Rendering flags. FPDF_REVERSE_BYTE_ORDER controls the
+//                     destination bitmap byte order.
+//   placements      - Finite, non-degenerate page-space image matrices.
+//   placement_count - Number of entries in placements; must be positive.
+//   alpha           - Finite global alpha in the inclusive range [0, 1].
+//
+// Returns true on success, including a fully clipped or zero-alpha draw, and
+// false for invalid input or a raster-device failure.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFBitmap_DrawBitmapPlacementsProbe(FPDF_BITMAP destination,
+                                      FPDF_BITMAP source,
+                                      FPDF_PAGE page,
+                                      int start_x,
+                                      int start_y,
+                                      int size_x,
+                                      int size_y,
+                                      int rotate,
+                                      int flags,
+                                      const FS_MATRIX* placements,
+                                      uint32_t placement_count,
+                                      float alpha);
+
+// Experimental EmbedPDF Extension API.
+// Composites one tightly packed RGBA image onto an existing bitmap at one or
+// more page-space placements. The destination bitmap is normally rendered by
+// FPDF_RenderPageBitmap() with the same page rectangle, rotation, and flags.
+//
+// This function does not create or mutate PDF page objects, dictionaries,
+// resources, content streams, or indirect objects. The RGBA data is copied into
+// call-local raster storage and is not retained after the function returns.
+//
+//   bitmap          - Destination bitmap handle.
+//   page            - Loaded page used only to derive the page-to-device
+//                     display matrix.
+//   start_x/start_y - Device origin used for page rendering.
+//   size_x/size_y   - Positive device size used for page rendering.
+//   rotate          - Clockwise page-render rotation in quarter turns [0, 3].
+//   flags           - Rendering flags. FPDF_REVERSE_BYTE_ORDER controls the
+//                     destination bitmap byte order.
+//   rgba_data       - Tightly packed RGBA bytes.
+//   rgba_size       - Exact byte length; must equal width * height * 4.
+//   image_width     - Positive source image width.
+//   image_height    - Positive source image height.
+//   placements      - Finite, non-degenerate page-space image matrices.
+//   placement_count - Number of entries in placements; must be positive.
+//   alpha           - Finite global alpha in the inclusive range [0, 1].
+//
+// Returns true on success, including a fully clipped or zero-alpha draw, and
+// false for invalid input or a raster-device failure.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFBitmap_DrawRgbaPlacementsProbe(FPDF_BITMAP bitmap,
+                                    FPDF_PAGE page,
+                                    int start_x,
+                                    int start_y,
+                                    int size_x,
+                                    int size_y,
+                                    int rotate,
+                                    int flags,
+                                    const uint8_t* rgba_data,
+                                    unsigned long rgba_size,
+                                    int image_width,
+                                    int image_height,
+                                    const FS_MATRIX* placements,
+                                    uint32_t placement_count,
+                                    float alpha);
 
 // Experimental EmbedPDF Extension API.
 // Renders the appearance stream of a single annotation to a bitmap.

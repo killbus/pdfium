@@ -25,6 +25,17 @@ class CPDF_PageResourceEditor {
       CPDF_Document* doc,
       CPDF_PageObjectHolder* page);
 
+  // Lightweight counterpart for append-only callers that intentionally do
+  // not construct or parse a CPDF_Page. `effective_resources` is the inherited
+  // resource dictionary resolved from `page_dict`, or null when the page has
+  // no effective resources. `resources_are_shared` must come from a sharing
+  // analysis that is valid for the enclosing edit operation.
+  static RetainPtr<CPDF_Dictionary> EnsurePageLocalResources(
+      CPDF_Document* doc,
+      RetainPtr<CPDF_Dictionary> page_dict,
+      RetainPtr<CPDF_Dictionary> effective_resources,
+      bool resources_are_shared);
+
   static RetainPtr<CPDF_Dictionary> EnsureLocalResourceSubdict(
       CPDF_Document* doc,
       RetainPtr<CPDF_Dictionary> resources,

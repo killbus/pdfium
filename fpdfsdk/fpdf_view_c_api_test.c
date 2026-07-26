@@ -166,6 +166,8 @@ int CheckPDFiumCApi() {
 
     // fpdf_edit.h
     CHK(EPDFImageObj_CreateReusableRgbaImageXObjectProbe);
+    CHK(EPDFPageXObjectAppendContext_CreateProbe);
+    CHK(EPDFPageXObjectAppendContext_DestroyProbe);
     CHK(EPDFPage_AppendIsolatedImageProbeWithXObject);
     CHK(EPDFPage_AppendIsolatedRgbaImageProbeWithXObject);
     CHK(EPDFPage_AppendIsolatedTextProbeWithStandardFont);
@@ -173,7 +175,9 @@ int CheckPDFiumCApi() {
     CHK(EPDFPage_AppendIsolatedUnicodeTextProbeWithEmbeddedFont);
     CHK(EPDFPage_AppendIsolatedVectorProbe);
     CHK(EPDFPage_AppendIsolatedVectorProbeWithExtGState);
+    CHK(EPDFPage_AppendReusableFormXObjectByIndexProbe);
     CHK(EPDFPage_AppendReusableFormXObjectProbe);
+    CHK(EPDFPage_AppendReusableImageXObjectByIndexProbe);
     CHK(EPDFPage_AppendReusableImageXObjectProbe);
     CHK(EPDFPage_AppendReusableUnicodeTextStampXObjectWithEmbeddedFontProbe);
     CHK(EPDFPage_AppendReusableUnicodeTextStampXObjectWithStandardFontProbe);
@@ -497,6 +501,9 @@ int CheckPDFiumCApi() {
     CHK(FPDF_DestroyClipPath);
 
     // fpdfview.h
+    CHK(EPDFBitmap_DrawBitmapPlacementsProbe);
+    CHK(EPDFBitmap_DrawRgbaPlacementsProbe);
+    CHK(EPDF_DeviceToPageByIndex);
     CHK(FPDFBitmap_Create);
     CHK(FPDFBitmap_CreateEx);
     CHK(FPDFBitmap_Destroy);

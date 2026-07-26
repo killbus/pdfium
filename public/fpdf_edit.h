@@ -92,6 +92,12 @@ typedef struct FPDF_IMAGEOBJ_METADATA {
   int marked_content_id;
 } FPDF_IMAGEOBJ_METADATA;
 
+// Short-lived document edit context for appending placements of existing
+// reusable Form/Image XObjects by page index without loading or parsing pages.
+// The source document must outlive this handle.
+typedef struct epdf_page_xobject_append_context_t__*
+    EPDF_PAGE_XOBJECT_APPEND_CONTEXT;
+
 #ifdef __cplusplus
 extern "C" {
 #endif  // __cplusplus
@@ -779,6 +785,54 @@ EPDFPage_AppendReusableImageXObjectProbe(FPDF_DOCUMENT document,
                                          const FS_MATRIX* placements,
                                          uint32_t placement_count,
                                          float alpha);
+
+// Creates a short-lived append context and snapshots document-wide page and
+// resource sharing facts once. The caller must not insert/delete/reorder pages
+// or otherwise mutate page/resource structure while the context is alive. No
+// live FPDF_PAGE handle for |document| may exist while the context is alive;
+// this is a caller-owned exclusivity precondition and is not checked by the
+// native API. The context retains no FPDF_PAGE handles or page image caches.
+// |document| must outlive the returned context.
+//
+// Returns a context on success, or NULL if |document| is invalid.
+FPDF_EXPORT EPDF_PAGE_XOBJECT_APPEND_CONTEXT FPDF_CALLCONV
+EPDFPageXObjectAppendContext_CreateProbe(FPDF_DOCUMENT document);
+
+// Destroys |context|. This function may be called with NULL.
+FPDF_EXPORT void FPDF_CALLCONV
+EPDFPageXObjectAppendContext_DestroyProbe(
+    EPDF_PAGE_XOBJECT_APPEND_CONTEXT context);
+
+// Appends placements of an existing indirect Form XObject to |page_index|
+// without constructing or parsing an FPDF_PAGE. The call fails closed if the
+// page tree changed since context creation, the page dictionary is shared by
+// multiple page indices, or inherited page/resource structure is malformed.
+// Failure is not transactional; after any failed append, the caller must stop
+// using the context and restore the document to a known pre-operation state
+// before retrying through any append path.
+//
+// Returns TRUE on success, or FALSE on failure.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendReusableFormXObjectByIndexProbe(
+    EPDF_PAGE_XOBJECT_APPEND_CONTEXT context,
+    int page_index,
+    uint32_t form_object_number,
+    const FS_MATRIX* placements,
+    uint32_t placement_count);
+
+// Image-XObject counterpart to
+// EPDFPage_AppendReusableFormXObjectByIndexProbe(). |alpha| must be finite and
+// in the inclusive range [0, 1].
+//
+// Returns TRUE on success, or FALSE on failure.
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendReusableImageXObjectByIndexProbe(
+    EPDF_PAGE_XOBJECT_APPEND_CONTEXT context,
+    int page_index,
+    uint32_t image_object_number,
+    const FS_MATRIX* placements,
+    uint32_t placement_count,
+    float alpha);
 
 // Destroy |page_object| by releasing its resources. |page_object| must have
 // been created by FPDFPageObj_CreateNew{Path|Rect}() or

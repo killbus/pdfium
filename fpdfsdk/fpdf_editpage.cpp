@@ -10,8 +10,10 @@
 #include <cstdint>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -43,10 +45,12 @@
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
 #include "core/fpdfapi/parser/fpdf_parser_decode.h"
+#include "core/fpdfapi/parser/object_tree_traversal_util.h"
 #include "core/fpdfapi/render/cpdf_docrenderdata.h"
 #include "core/fpdfdoc/cpdf_annot.h"
 #include "core/fpdfdoc/cpdf_annotlist.h"
 #include "core/fxcrt/compiler_specific.h"
+#include "core/fxcrt/containers/contains.h"
 #include "core/fxcrt/fx_extension.h"
 #include "core/fxcrt/fx_memcpy_wrappers.h"
 #include "core/fxcrt/fx_string_wrappers.h"
@@ -595,7 +599,170 @@ bool ReplacePageContentsWithIsolatedAppendStream(
   return true;
 }
 
+// Returns a present optional for a structurally valid inheritance walk. The
+// contained dictionary may be null when the page has no effective /Resources.
+// A missing optional means a cycle or a present-but-malformed inherited entry.
+std::optional<RetainPtr<CPDF_Dictionary>> GetEffectivePageResourcesWithoutPage(
+    CPDF_Document* document,
+    RetainPtr<CPDF_Dictionary> page_dict) {
+  if (!document || !page_dict) {
+    return std::nullopt;
+  }
+
+  RetainPtr<CPDF_Dictionary> catalog = document->GetMutableRoot();
+  RetainPtr<CPDF_Dictionary> root_pages =
+      catalog ? catalog->GetMutableDictFor("Pages") : nullptr;
+  if (!root_pages) {
+    return std::nullopt;
+  }
+
+  std::set<const CPDF_Dictionary*> visited;
+  RetainPtr<CPDF_Dictionary> current = std::move(page_dict);
+  RetainPtr<CPDF_Dictionary> effective_resources;
+  bool is_page = true;
+  while (current) {
+    if (!visited.insert(current.Get()).second) {
+      return std::nullopt;
+    }
+
+    const ByteStringView expected_type =
+        is_page ? ByteStringView("Page") : ByteStringView("Pages");
+    if (current->GetNameFor("Type") != expected_type) {
+      return std::nullopt;
+    }
+
+    RetainPtr<CPDF_Object> resources_object;
+    if (!effective_resources) {
+      resources_object =
+          current->GetMutableObjectFor(pdfium::page_object::kResources);
+    }
+    if (!effective_resources && resources_object) {
+      RetainPtr<CPDF_Object> direct = resources_object->GetMutableDirect();
+      RetainPtr<CPDF_Dictionary> resources = ToDictionary(direct);
+      if (!resources) {
+        return std::nullopt;
+      }
+      effective_resources = std::move(resources);
+    }
+
+    RetainPtr<CPDF_Object> parent_object =
+        current->GetMutableObjectFor(pdfium::page_object::kParent);
+    if (!parent_object) {
+      if (is_page || current.Get() != root_pages.Get()) {
+        return std::nullopt;
+      }
+      return effective_resources;
+    }
+
+    RetainPtr<CPDF_Reference> parent_reference = ToReference(parent_object);
+    current = parent_reference
+                  ? ToDictionary(parent_reference->GetMutableDirect())
+                  : nullptr;
+    if (!current) {
+      return std::nullopt;
+    }
+    is_page = false;
+  }
+  return std::nullopt;
+}
+
+std::optional<ByteString> PreflightResourceName(
+    RetainPtr<CPDF_Dictionary> resources,
+    ByteStringView subdict_key,
+    ByteStringView prefix) {
+  if (!resources || !resources->KeyExist(subdict_key)) {
+    ByteString name(prefix);
+    name += "0";
+    return name;
+  }
+
+  RetainPtr<CPDF_Object> subdict_object =
+      resources->GetMutableObjectFor(subdict_key);
+  RetainPtr<CPDF_Dictionary> subdict =
+      subdict_object ? ToDictionary(subdict_object->GetMutableDirect())
+                     : nullptr;
+  if (!subdict) {
+    return std::nullopt;
+  }
+
+  ByteString name =
+      CPDF_PageResourceEditor::AllocateUniqueResourceName(subdict, prefix);
+  return name.IsEmpty() ? std::nullopt
+                        : std::optional<ByteString>(std::move(name));
+}
+
 }  // namespace
+
+struct epdf_page_xobject_append_context_t__ {
+  explicit epdf_page_xobject_append_context_t__(CPDF_Document* document)
+      : document(document),
+        initial_page_count(document->GetPageCount()),
+        multiply_referenced_object_numbers(
+            GetObjectsWithMultipleReferences(document)),
+        page_dictionaries(initial_page_count) {
+    std::map<const CPDF_Dictionary*, int> page_dictionary_counts;
+    std::map<const CPDF_Dictionary*, int> resource_dictionary_counts;
+    for (int page_index = 0; page_index < initial_page_count; ++page_index) {
+      RetainPtr<CPDF_Dictionary> page_dict =
+          document->GetMutablePageDictionary(page_index);
+      if (!page_dict) {
+        invalid_page_indices.insert(page_index);
+        continue;
+      }
+
+      page_dictionaries[page_index] = page_dict.Get();
+      if (++page_dictionary_counts[page_dict.Get()] == 2) {
+        shared_page_dictionaries.insert(page_dict.Get());
+      }
+
+      auto resources =
+          GetEffectivePageResourcesWithoutPage(document, page_dict);
+      if (!resources.has_value()) {
+        invalid_page_indices.insert(page_index);
+        continue;
+      }
+      if (*resources && ++resource_dictionary_counts[resources->Get()] == 2) {
+        shared_resource_dictionaries.insert(resources->Get());
+      }
+    }
+  }
+
+  RetainPtr<CPDF_Dictionary> GetTargetPageDictionary(int page_index) const {
+    if (page_index < 0 || page_index >= initial_page_count ||
+        document->GetPageCount() != initial_page_count ||
+        pdfium::Contains(invalid_page_indices, page_index)) {
+      return nullptr;
+    }
+
+    RetainPtr<CPDF_Dictionary> page_dict =
+        document->GetMutablePageDictionary(page_index);
+    if (!page_dict || page_dict.Get() != page_dictionaries[page_index] ||
+        pdfium::Contains(shared_page_dictionaries, page_dict.Get())) {
+      return nullptr;
+    }
+    return page_dict;
+  }
+
+  bool IsResourceDictionaryShared(
+      RetainPtr<const CPDF_Dictionary> resources) const {
+    if (!resources) {
+      return false;
+    }
+    const uint32_t object_number = resources->GetObjNum();
+    return (object_number && pdfium::Contains(
+                                 multiply_referenced_object_numbers,
+                                 object_number)) ||
+           pdfium::Contains(shared_resource_dictionaries, resources.Get());
+  }
+
+  CPDF_Document* const document;
+  const int initial_page_count;
+  const std::set<uint32_t> multiply_referenced_object_numbers;
+  std::vector<const CPDF_Dictionary*> page_dictionaries;
+  std::set<int> invalid_page_indices;
+  std::set<const CPDF_Dictionary*> shared_page_dictionaries;
+  std::set<const CPDF_Dictionary*> shared_resource_dictionaries;
+};
 
 FPDF_EXPORT FPDF_DOCUMENT FPDF_CALLCONV FPDF_CreateNewDocument() {
   auto pDoc =
@@ -2271,6 +2438,160 @@ EPDFPage_AppendReusableImageXObjectProbe(FPDF_DOCUMENT document,
       document, page, image_object_number, placement_matrices, alpha);
 }
 
+FPDF_EXPORT EPDF_PAGE_XOBJECT_APPEND_CONTEXT FPDF_CALLCONV
+EPDFPageXObjectAppendContext_CreateProbe(FPDF_DOCUMENT document) {
+  CPDF_Document* doc = CPDFDocumentFromFPDFDocument(document);
+  return doc ? new epdf_page_xobject_append_context_t__(doc) : nullptr;
+}
+
+FPDF_EXPORT void FPDF_CALLCONV
+EPDFPageXObjectAppendContext_DestroyProbe(
+    EPDF_PAGE_XOBJECT_APPEND_CONTEXT context) {
+  delete context;
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendReusableFormXObjectByIndexProbe(
+    EPDF_PAGE_XOBJECT_APPEND_CONTEXT context,
+    int page_index,
+    uint32_t form_object_number,
+    const FS_MATRIX* placements,
+    uint32_t placement_count) {
+  if (!context || !placements || placement_count == 0 ||
+      !IsReusableFormXObject(context->document, form_object_number)) {
+    return false;
+  }
+
+  std::vector<CFX_Matrix> placement_matrices =
+      ConvertPlacementMatrices(placements, placement_count);
+  if (!std::all_of(placement_matrices.begin(), placement_matrices.end(),
+                   IsValidPlacementMatrix)) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> page_dict =
+      context->GetTargetPageDictionary(page_index);
+  if (!page_dict) {
+    return false;
+  }
+
+  std::vector<uint32_t> old_content_object_numbers;
+  if (!CollectOriginalContentRefs(
+          page_dict->GetMutableObjectFor(pdfium::page_object::kContents),
+          &old_content_object_numbers)) {
+    return false;
+  }
+
+  auto effective_resources =
+      GetEffectivePageResourcesWithoutPage(context->document, page_dict);
+  if (!effective_resources.has_value()) {
+    return false;
+  }
+  std::optional<ByteString> name =
+      PreflightResourceName(*effective_resources, "XObject", "WM");
+  if (!name.has_value()) {
+    return false;
+  }
+  RetainPtr<CPDF_Dictionary> resources =
+      CPDF_PageResourceEditor::EnsurePageLocalResources(
+          context->document, page_dict, *effective_resources,
+          context->IsResourceDictionaryShared(*effective_resources));
+  RetainPtr<CPDF_Dictionary> xobjects =
+      resources ? CPDF_PageResourceEditor::EnsureLocalResourceSubdict(
+                      context->document, resources, "XObject")
+                : nullptr;
+  if (!xobjects) {
+    return false;
+  }
+
+  xobjects->SetNewFor<CPDF_Reference>(*name, context->document,
+                                      form_object_number);
+  return ReplacePageContentsWithIsolatedAppendStream(
+      context->document, page_dict, old_content_object_numbers,
+      [&]() {
+        return NewReusableTextStampPlacementContentStream(
+            context->document, name->AsStringView(), placement_matrices);
+      });
+}
+
+FPDF_EXPORT FPDF_BOOL FPDF_CALLCONV
+EPDFPage_AppendReusableImageXObjectByIndexProbe(
+    EPDF_PAGE_XOBJECT_APPEND_CONTEXT context,
+    int page_index,
+    uint32_t image_object_number,
+    const FS_MATRIX* placements,
+    uint32_t placement_count,
+    float alpha) {
+  if (!context || !placements || placement_count == 0 ||
+      !IsReusableImageXObject(context->document, image_object_number) ||
+      !std::isfinite(alpha) || alpha < 0.0f || alpha > 1.0f) {
+    return false;
+  }
+
+  std::vector<CFX_Matrix> placement_matrices =
+      ConvertPlacementMatrices(placements, placement_count);
+  if (!std::all_of(placement_matrices.begin(), placement_matrices.end(),
+                   IsValidPlacementMatrix)) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> page_dict =
+      context->GetTargetPageDictionary(page_index);
+  if (!page_dict) {
+    return false;
+  }
+
+  std::vector<uint32_t> old_content_object_numbers;
+  if (!CollectOriginalContentRefs(
+          page_dict->GetMutableObjectFor(pdfium::page_object::kContents),
+          &old_content_object_numbers)) {
+    return false;
+  }
+
+  auto effective_resources =
+      GetEffectivePageResourcesWithoutPage(context->document, page_dict);
+  if (!effective_resources.has_value()) {
+    return false;
+  }
+  std::optional<ByteString> gs_name =
+      PreflightResourceName(*effective_resources, "ExtGState", "GS");
+  std::optional<ByteString> image_name =
+      PreflightResourceName(*effective_resources, "XObject", "Im");
+  if (!gs_name.has_value() || !image_name.has_value()) {
+    return false;
+  }
+  RetainPtr<CPDF_Dictionary> resources =
+      CPDF_PageResourceEditor::EnsurePageLocalResources(
+          context->document, page_dict, *effective_resources,
+          context->IsResourceDictionaryShared(*effective_resources));
+  if (!resources) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> ext_gstate_resources =
+      CPDF_PageResourceEditor::EnsureLocalResourceSubdict(
+          context->document, resources, "ExtGState");
+  RetainPtr<CPDF_Dictionary> xobject_resources =
+      CPDF_PageResourceEditor::EnsureLocalResourceSubdict(
+          context->document, resources, "XObject");
+  if (!ext_gstate_resources || !xobject_resources) {
+    return false;
+  }
+
+  RetainPtr<CPDF_Dictionary> ext_gstate =
+      NewExtGState(context->document, alpha);
+  ext_gstate_resources->SetNewFor<CPDF_Reference>(
+      *gs_name, context->document, ext_gstate->GetObjNum());
+  xobject_resources->SetNewFor<CPDF_Reference>(
+      *image_name, context->document, image_object_number);
+  return ReplacePageContentsWithIsolatedAppendStream(
+      context->document, page_dict, old_content_object_numbers,
+      [&]() {
+        return NewReusableImageXObjectPlacementContentStream(
+            context->document, gs_name->AsStringView(),
+            image_name->AsStringView(), placement_matrices);
+      });
+}
 
 FPDF_EXPORT void FPDF_CALLCONV
 FPDFPageObj_Transform(FPDF_PAGEOBJECT page_object,

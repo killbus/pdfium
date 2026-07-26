@@ -5,6 +5,8 @@
 #include <math.h>
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <string>
@@ -12,11 +14,19 @@
 #include <vector>
 
 #include "build/build_config.h"
+#include "constants/page_object.h"
+#include "core/fpdfapi/page/cpdf_page.h"
+#include "core/fpdfapi/page/cpdf_pageimagecache.h"
+#include "core/fpdfapi/parser/cpdf_dictionary.h"
 #include "core/fpdfapi/parser/cpdf_document.h"
+#include "core/fxcrt/compiler_specific.h"
+#include "core/fxcrt/span.h"
 #include "core/fxge/cfx_defaultrenderdevice.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "fpdfsdk/fpdf_view_c_api_test.h"
 #include "public/cpp/fpdf_scopers.h"
+#include "public/fpdf_edit.h"
+#include "public/fpdf_transformpage.h"
 #include "public/fpdfview.h"
 #include "testing/embedder_test.h"
 #include "testing/embedder_test_constants.h"
@@ -151,6 +161,18 @@ ScopedFPDFBitmap SkPictureToPdfiumBitmap(sk_sp<SkPicture> picture,
 }
 #endif  // defined(PDF_USE_SKIA)
 
+std::array<uint8_t, 4> GetBitmapPixel(FPDF_BITMAP bitmap, int x, int y) {
+  const int stride = FPDFBitmap_GetStride(bitmap);
+  const auto* buffer =
+      static_cast<const uint8_t*>(FPDFBitmap_GetBuffer(bitmap));
+  const size_t offset = static_cast<size_t>(y) * stride +
+                        static_cast<size_t>(x) * 4;
+  // SAFETY: Test callers provide coordinates within the bitmap bounds.
+  pdfium::span<const uint8_t> pixel =
+      UNSAFE_BUFFERS(pdfium::span(buffer + offset, 4u));
+  return {pixel[0], pixel[1], pixel[2], pixel[3]};
+}
+
 }  // namespace
 
 TEST(fpdf, CApiTest) {
@@ -280,6 +302,401 @@ class FPDFViewEmbedderTest : public EmbedderTest {
     CompareBitmap(bitmap, bitmap_width, bitmap_height, expected_checksum);
   }
 };
+
+TEST_F(FPDFViewEmbedderTest,
+       BitmapRgbaPlacementsComposeWithoutMutatingPdfState) {
+  CreateEmptyDocument();
+  ScopedFPDFPage page(FPDFPage_New(document(), 0, 100, 100));
+  ASSERT_TRUE(page);
+  ScopedFPDFBitmap bitmap(FPDFBitmap_Create(100, 100, /*alpha=*/true));
+  ASSERT_TRUE(bitmap);
+  ASSERT_TRUE(FPDFBitmap_FillRect(bitmap.get(), 0, 0, 100, 100, 0xffffffff));
+
+  CPDF_Document* pdf_document = CPDFDocumentFromFPDFDocument(document());
+  CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page.get());
+  ASSERT_TRUE(pdf_document);
+  ASSERT_TRUE(pdf_page);
+  RetainPtr<const CPDF_Dictionary> page_dict = pdf_page->GetDict();
+  ASSERT_TRUE(page_dict);
+  RetainPtr<const CPDF_Dictionary> resources =
+      page_dict->GetDictFor(pdfium::page_object::kResources);
+  const uint32_t last_object_number = pdf_document->GetLastObjNum();
+  const int page_object_count = FPDFPage_CountObjects(page.get());
+  const size_t page_dict_size = page_dict->size();
+  const uint32_t page_image_cache_time_count =
+      pdf_page->GetPageImageCache()->GetTimeCount();
+
+  static constexpr uint8_t kRgba[] = {255, 0, 0, 128};
+  const FS_MATRIX placements[] = {
+      {20, 0, 0, 20, 10, 10},
+      {0, 20, -20, 0, 70, 10},
+  };
+  ASSERT_TRUE(EPDFBitmap_DrawRgbaPlacementsProbe(
+      bitmap.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, kRgba, sizeof(kRgba), 1, 1, placements, 2,
+      0.5f));
+
+  for (const int device_x : {20, 60}) {
+    const std::array<uint8_t, 4> pixel =
+        GetBitmapPixel(bitmap.get(), device_x, 80);
+    EXPECT_EQ(255, pixel[0]);
+    EXPECT_LT(pixel[1], 255);
+    EXPECT_EQ(pixel[1], pixel[2]);
+    EXPECT_EQ(255, pixel[3]);
+  }
+
+  EXPECT_EQ(last_object_number, pdf_document->GetLastObjNum());
+  EXPECT_EQ(page_object_count, FPDFPage_CountObjects(page.get()));
+  EXPECT_EQ(page_dict.Get(), pdf_page->GetDict().Get());
+  EXPECT_EQ(page_dict_size, pdf_page->GetDict()->size());
+  EXPECT_EQ(resources.Get(),
+            pdf_page->GetDict()
+                ->GetDictFor(pdfium::page_object::kResources)
+                .Get());
+  EXPECT_EQ(page_image_cache_time_count,
+            pdf_page->GetPageImageCache()->GetTimeCount());
+
+  EXPECT_TRUE(EPDFBitmap_DrawRgbaPlacementsProbe(
+      bitmap.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, kRgba, sizeof(kRgba), 1, 1, placements, 2,
+      0.5f));
+  EXPECT_EQ(last_object_number, pdf_document->GetLastObjNum());
+  EXPECT_EQ(page_object_count, FPDFPage_CountObjects(page.get()));
+  EXPECT_EQ(page_dict_size, pdf_page->GetDict()->size());
+  EXPECT_EQ(page_image_cache_time_count,
+            pdf_page->GetPageImageCache()->GetTimeCount());
+}
+
+TEST_F(FPDFViewEmbedderTest,
+       BitmapRgbaPlacementsUseLoadedPageDisplayTransform) {
+  CreateEmptyDocument();
+  ScopedFPDFPage page(FPDFPage_New(document(), 0, 300, 400));
+  ASSERT_TRUE(page);
+  FPDFPage_SetCropBox(page.get(), 25, 40, 275, 360);
+  FPDFPage_SetRotation(page.get(), 1);
+
+  constexpr int kStartX = 7;
+  constexpr int kStartY = 11;
+  constexpr int kSizeX = 200;
+  constexpr int kSizeY = 150;
+  constexpr int kRenderRotation = 2;
+  ScopedFPDFBitmap bitmap(FPDFBitmap_Create(240, 180, /*alpha=*/true));
+  ASSERT_TRUE(bitmap);
+  ASSERT_TRUE(FPDFBitmap_FillRect(bitmap.get(), 0, 0, 240, 180, 0xffffffff));
+
+  static constexpr uint8_t kRgba[] = {255, 0, 0, 255};
+  const FS_MATRIX placement = {20, 0, 0, 20, 100, 150};
+  ASSERT_TRUE(EPDFBitmap_DrawRgbaPlacementsProbe(
+      bitmap.get(), page.get(), kStartX, kStartY, kSizeX, kSizeY,
+      kRenderRotation, FPDF_REVERSE_BYTE_ORDER, kRgba, sizeof(kRgba), 1, 1,
+      &placement, 1, 1.0f));
+
+  int device_x = 0;
+  int device_y = 0;
+  ASSERT_TRUE(FPDF_PageToDevice(page.get(), kStartX, kStartY, kSizeX, kSizeY,
+                                kRenderRotation, 110, 160, &device_x,
+                                &device_y));
+  ASSERT_GE(device_x, 0);
+  ASSERT_LT(device_x, 240);
+  ASSERT_GE(device_y, 0);
+  ASSERT_LT(device_y, 180);
+  const std::array<uint8_t, 4> pixel =
+      GetBitmapPixel(bitmap.get(), device_x, device_y);
+  EXPECT_EQ(255, pixel[0]);
+  EXPECT_EQ(0, pixel[1]);
+  EXPECT_EQ(0, pixel[2]);
+  EXPECT_EQ(255, pixel[3]);
+}
+
+TEST_F(FPDFViewEmbedderTest,
+       BitmapRgbaPlacementsRejectInvalidInputBeforeDrawing) {
+  CreateEmptyDocument();
+  ScopedFPDFPage page(FPDFPage_New(document(), 0, 100, 100));
+  ASSERT_TRUE(page);
+  ScopedFPDFBitmap bitmap(FPDFBitmap_Create(100, 100, /*alpha=*/true));
+  ASSERT_TRUE(bitmap);
+  ASSERT_TRUE(FPDFBitmap_FillRect(bitmap.get(), 0, 0, 100, 100, 0xffffffff));
+
+  static constexpr uint8_t kRgba[] = {255, 0, 0, 255};
+  const FS_MATRIX valid = {20, 0, 0, 20, 10, 10};
+  const FS_MATRIX degenerate = {1, 0, 0, 0, 10, 10};
+  const FS_MATRIX non_finite = {
+      1, 0, 0, 1, std::numeric_limits<float>::quiet_NaN(), 10};
+  const FS_MATRIX invalid_later[] = {valid, non_finite};
+
+  EXPECT_FALSE(EPDFBitmap_DrawRgbaPlacementsProbe(
+      nullptr, page.get(), 0, 0, 100, 100, 0, FPDF_REVERSE_BYTE_ORDER, kRgba,
+      sizeof(kRgba), 1, 1, &valid, 1, 1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawRgbaPlacementsProbe(
+      bitmap.get(), nullptr, 0, 0, 100, 100, 0, FPDF_REVERSE_BYTE_ORDER,
+      kRgba, sizeof(kRgba), 1, 1, &valid, 1, 1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawRgbaPlacementsProbe(
+      bitmap.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, nullptr, sizeof(kRgba), 1, 1, &valid, 1,
+      1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawRgbaPlacementsProbe(
+      bitmap.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, kRgba, sizeof(kRgba) - 1, 1, 1, &valid, 1,
+      1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawRgbaPlacementsProbe(
+      bitmap.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, kRgba, sizeof(kRgba), 0, 1, &valid, 1,
+      1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawRgbaPlacementsProbe(
+      bitmap.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, kRgba, sizeof(kRgba), 1, 1, nullptr, 1,
+      1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawRgbaPlacementsProbe(
+      bitmap.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, kRgba, sizeof(kRgba), 1, 1, &valid, 0,
+      1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawRgbaPlacementsProbe(
+      bitmap.get(), page.get(), 0, 0, 100, 100, 4,
+      FPDF_REVERSE_BYTE_ORDER, kRgba, sizeof(kRgba), 1, 1, &valid, 1,
+      1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawRgbaPlacementsProbe(
+      bitmap.get(), page.get(), 0, 0, 0, 100, 0, FPDF_REVERSE_BYTE_ORDER,
+      kRgba, sizeof(kRgba), 1, 1, &valid, 1, 1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawRgbaPlacementsProbe(
+      bitmap.get(), page.get(), std::numeric_limits<int>::max(), 0, 1, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, kRgba, sizeof(kRgba), 1, 1, &valid, 1,
+      1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawRgbaPlacementsProbe(
+      bitmap.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, kRgba, sizeof(kRgba), 1, 1, &degenerate, 1,
+      1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawRgbaPlacementsProbe(
+      bitmap.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, kRgba, sizeof(kRgba), 1, 1, invalid_later, 2,
+      1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawRgbaPlacementsProbe(
+      bitmap.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, kRgba, sizeof(kRgba), 1, 1, &valid, 1,
+      std::numeric_limits<float>::quiet_NaN()));
+  EXPECT_FALSE(EPDFBitmap_DrawRgbaPlacementsProbe(
+      bitmap.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, kRgba, sizeof(kRgba), 1, 1, &valid, 1,
+      1.01f));
+  EXPECT_EQ((std::array<uint8_t, 4>{255, 255, 255, 255}),
+            GetBitmapPixel(bitmap.get(), 20, 80));
+
+  EXPECT_TRUE(EPDFBitmap_DrawRgbaPlacementsProbe(
+      bitmap.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, kRgba, sizeof(kRgba), 1, 1, &valid, 1,
+      0.0f));
+  const FS_MATRIX off_page = {10, 0, 0, 10, 1000, 1000};
+  EXPECT_TRUE(EPDFBitmap_DrawRgbaPlacementsProbe(
+      bitmap.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, kRgba, sizeof(kRgba), 1, 1, &off_page, 1,
+      1.0f));
+  EXPECT_EQ((std::array<uint8_t, 4>{255, 255, 255, 255}),
+            GetBitmapPixel(bitmap.get(), 20, 80));
+}
+
+TEST_F(FPDFViewEmbedderTest,
+       BitmapPlacementsComposeCallerOwnedSourceWithoutMutatingPdfState) {
+  CreateEmptyDocument();
+  ScopedFPDFPage page(FPDFPage_New(document(), 0, 100, 100));
+  ASSERT_TRUE(page);
+  ScopedFPDFBitmap destination(FPDFBitmap_Create(100, 100, /*alpha=*/true));
+  ASSERT_TRUE(destination);
+  ASSERT_TRUE(FPDFBitmap_FillRect(destination.get(), 0, 0, 100, 100,
+                                  0xffffffff));
+  ScopedFPDFBitmap source(FPDFBitmap_Create(1, 1, /*alpha=*/true));
+  ASSERT_TRUE(source);
+  ASSERT_EQ(FPDFBitmap_BGRA, FPDFBitmap_GetFormat(source.get()));
+  ASSERT_TRUE(FPDFBitmap_FillRect(source.get(), 0, 0, 1, 1, 0x80ff0000));
+  const std::array<uint8_t, 4> source_pixel =
+      GetBitmapPixel(source.get(), 0, 0);
+
+  CPDF_Document* pdf_document = CPDFDocumentFromFPDFDocument(document());
+  CPDF_Page* pdf_page = CPDFPageFromFPDFPage(page.get());
+  ASSERT_TRUE(pdf_document);
+  ASSERT_TRUE(pdf_page);
+  RetainPtr<const CPDF_Dictionary> page_dict = pdf_page->GetDict();
+  ASSERT_TRUE(page_dict);
+  RetainPtr<const CPDF_Dictionary> resources =
+      page_dict->GetDictFor(pdfium::page_object::kResources);
+  const uint32_t last_object_number = pdf_document->GetLastObjNum();
+  const int page_object_count = FPDFPage_CountObjects(page.get());
+  const size_t page_dict_size = page_dict->size();
+  const uint32_t page_image_cache_time_count =
+      pdf_page->GetPageImageCache()->GetTimeCount();
+
+  const FS_MATRIX placements[] = {
+      {20, 0, 0, 20, 10, 10},
+      {0, 20, -20, 0, 70, 10},
+  };
+  ASSERT_TRUE(EPDFBitmap_DrawBitmapPlacementsProbe(
+      destination.get(), source.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, placements, 2, 0.5f));
+
+  for (const int device_x : {20, 60}) {
+    const std::array<uint8_t, 4> pixel =
+        GetBitmapPixel(destination.get(), device_x, 80);
+    EXPECT_EQ(255, pixel[0]);
+    EXPECT_LT(pixel[1], 255);
+    EXPECT_EQ(pixel[1], pixel[2]);
+    EXPECT_EQ(255, pixel[3]);
+  }
+  EXPECT_EQ(source_pixel, GetBitmapPixel(source.get(), 0, 0));
+  EXPECT_EQ(last_object_number, pdf_document->GetLastObjNum());
+  EXPECT_EQ(page_object_count, FPDFPage_CountObjects(page.get()));
+  EXPECT_EQ(page_dict.Get(), pdf_page->GetDict().Get());
+  EXPECT_EQ(page_dict_size, pdf_page->GetDict()->size());
+  EXPECT_EQ(resources.Get(),
+            pdf_page->GetDict()
+                ->GetDictFor(pdfium::page_object::kResources)
+                .Get());
+  EXPECT_EQ(page_image_cache_time_count,
+            pdf_page->GetPageImageCache()->GetTimeCount());
+
+  EXPECT_TRUE(EPDFBitmap_DrawBitmapPlacementsProbe(
+      destination.get(), source.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, placements, 2, 0.5f));
+  EXPECT_EQ(source_pixel, GetBitmapPixel(source.get(), 0, 0));
+  EXPECT_EQ(last_object_number, pdf_document->GetLastObjNum());
+  EXPECT_EQ(page_object_count, FPDFPage_CountObjects(page.get()));
+  EXPECT_EQ(page_dict_size, pdf_page->GetDict()->size());
+  EXPECT_EQ(page_image_cache_time_count,
+            pdf_page->GetPageImageCache()->GetTimeCount());
+}
+
+TEST_F(FPDFViewEmbedderTest,
+       BitmapPlacementsUseLoadedPageDisplayTransformAndDestinationByteOrder) {
+  CreateEmptyDocument();
+  ScopedFPDFPage page(FPDFPage_New(document(), 0, 300, 400));
+  ASSERT_TRUE(page);
+  FPDFPage_SetCropBox(page.get(), 25, 40, 275, 360);
+  FPDFPage_SetRotation(page.get(), 1);
+
+  constexpr int kStartX = 7;
+  constexpr int kStartY = 11;
+  constexpr int kSizeX = 200;
+  constexpr int kSizeY = 150;
+  constexpr int kRenderRotation = 2;
+  ScopedFPDFBitmap reverse_destination(
+      FPDFBitmap_Create(240, 180, /*alpha=*/true));
+  ScopedFPDFBitmap native_destination(
+      FPDFBitmap_Create(240, 180, /*alpha=*/true));
+  ScopedFPDFBitmap source(FPDFBitmap_Create(1, 1, /*alpha=*/true));
+  ASSERT_TRUE(reverse_destination);
+  ASSERT_TRUE(native_destination);
+  ASSERT_TRUE(source);
+  ASSERT_TRUE(FPDFBitmap_FillRect(reverse_destination.get(), 0, 0, 240, 180,
+                                  0xffffffff));
+  ASSERT_TRUE(FPDFBitmap_FillRect(native_destination.get(), 0, 0, 240, 180,
+                                  0xffffffff));
+  ASSERT_TRUE(FPDFBitmap_FillRect(source.get(), 0, 0, 1, 1, 0xffff0000));
+
+  const FS_MATRIX placement = {20, 0, 0, 20, 100, 150};
+  ASSERT_TRUE(EPDFBitmap_DrawBitmapPlacementsProbe(
+      reverse_destination.get(), source.get(), page.get(), kStartX, kStartY,
+      kSizeX, kSizeY, kRenderRotation, FPDF_REVERSE_BYTE_ORDER, &placement, 1,
+      1.0f));
+  ASSERT_TRUE(EPDFBitmap_DrawBitmapPlacementsProbe(
+      native_destination.get(), source.get(), page.get(), kStartX, kStartY,
+      kSizeX, kSizeY, kRenderRotation, 0, &placement, 1, 1.0f));
+
+  int device_x = 0;
+  int device_y = 0;
+  ASSERT_TRUE(FPDF_PageToDevice(page.get(), kStartX, kStartY, kSizeX, kSizeY,
+                                kRenderRotation, 110, 160, &device_x,
+                                &device_y));
+  ASSERT_GE(device_x, 0);
+  ASSERT_LT(device_x, 240);
+  ASSERT_GE(device_y, 0);
+  ASSERT_LT(device_y, 180);
+  EXPECT_EQ((std::array<uint8_t, 4>{255, 0, 0, 255}),
+            GetBitmapPixel(reverse_destination.get(), device_x, device_y));
+  EXPECT_EQ((std::array<uint8_t, 4>{0, 0, 255, 255}),
+            GetBitmapPixel(native_destination.get(), device_x, device_y));
+}
+
+TEST_F(FPDFViewEmbedderTest,
+       BitmapPlacementsRejectInvalidInputBeforeDrawing) {
+  CreateEmptyDocument();
+  ScopedFPDFPage page(FPDFPage_New(document(), 0, 100, 100));
+  ASSERT_TRUE(page);
+  ScopedFPDFBitmap destination(FPDFBitmap_Create(100, 100, /*alpha=*/true));
+  ScopedFPDFBitmap source(FPDFBitmap_Create(1, 1, /*alpha=*/true));
+  ASSERT_TRUE(destination);
+  ASSERT_TRUE(source);
+  ASSERT_TRUE(FPDFBitmap_FillRect(destination.get(), 0, 0, 100, 100,
+                                  0xffffffff));
+  ASSERT_TRUE(FPDFBitmap_FillRect(source.get(), 0, 0, 1, 1, 0xffff0000));
+
+  const FS_MATRIX valid = {20, 0, 0, 20, 10, 10};
+  const FS_MATRIX degenerate = {1, 0, 0, 0, 10, 10};
+  const FS_MATRIX non_finite = {
+      1, 0, 0, 1, std::numeric_limits<float>::quiet_NaN(), 10};
+  const FS_MATRIX invalid_later[] = {valid, non_finite};
+  std::array<uint8_t, 6> overlapping_storage = {};
+  pdfium::span<uint8_t> overlapping_span(overlapping_storage);
+  ScopedFPDFBitmap overlapping_destination(FPDFBitmap_CreateEx(
+      1, 1, FPDFBitmap_BGRA, overlapping_span.data(), 4));
+  ScopedFPDFBitmap overlapping_source(FPDFBitmap_CreateEx(
+      1, 1, FPDFBitmap_BGRA, overlapping_span.subspan<2>().data(), 4));
+  ASSERT_TRUE(overlapping_destination);
+  ASSERT_TRUE(overlapping_source);
+
+  EXPECT_FALSE(EPDFBitmap_DrawBitmapPlacementsProbe(
+      nullptr, source.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, &valid, 1, 1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawBitmapPlacementsProbe(
+      destination.get(), nullptr, page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, &valid, 1, 1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawBitmapPlacementsProbe(
+      destination.get(), source.get(), nullptr, 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, &valid, 1, 1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawBitmapPlacementsProbe(
+      destination.get(), destination.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, &valid, 1, 1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawBitmapPlacementsProbe(
+      overlapping_destination.get(), overlapping_source.get(), page.get(), 0,
+      0, 100, 100, 0, FPDF_REVERSE_BYTE_ORDER, &valid, 1, 1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawBitmapPlacementsProbe(
+      destination.get(), source.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, nullptr, 1, 1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawBitmapPlacementsProbe(
+      destination.get(), source.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, &valid, 0, 1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawBitmapPlacementsProbe(
+      destination.get(), source.get(), page.get(), 0, 0, 100, 100, 4,
+      FPDF_REVERSE_BYTE_ORDER, &valid, 1, 1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawBitmapPlacementsProbe(
+      destination.get(), source.get(), page.get(), 0, 0, 0, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, &valid, 1, 1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawBitmapPlacementsProbe(
+      destination.get(), source.get(), page.get(),
+      std::numeric_limits<int>::max(), 0, 1, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, &valid, 1, 1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawBitmapPlacementsProbe(
+      destination.get(), source.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, &degenerate, 1, 1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawBitmapPlacementsProbe(
+      destination.get(), source.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, invalid_later, 2, 1.0f));
+  EXPECT_FALSE(EPDFBitmap_DrawBitmapPlacementsProbe(
+      destination.get(), source.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, &valid, 1,
+      std::numeric_limits<float>::quiet_NaN()));
+  EXPECT_FALSE(EPDFBitmap_DrawBitmapPlacementsProbe(
+      destination.get(), source.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, &valid, 1, 1.01f));
+  EXPECT_EQ((std::array<uint8_t, 4>{255, 255, 255, 255}),
+            GetBitmapPixel(destination.get(), 20, 80));
+
+  EXPECT_TRUE(EPDFBitmap_DrawBitmapPlacementsProbe(
+      destination.get(), source.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, &valid, 1, 0.0f));
+  const FS_MATRIX off_page = {10, 0, 0, 10, 1000, 1000};
+  EXPECT_TRUE(EPDFBitmap_DrawBitmapPlacementsProbe(
+      destination.get(), source.get(), page.get(), 0, 0, 100, 100, 0,
+      FPDF_REVERSE_BYTE_ORDER, &off_page, 1, 1.0f));
+  EXPECT_EQ((std::array<uint8_t, 4>{255, 255, 255, 255}),
+            GetBitmapPixel(destination.get(), 20, 80));
+}
 
 // Test for conversion of a point in device coordinates to page coordinates
 TEST_F(FPDFViewEmbedderTest, DeviceCoordinatesToPageCoordinates) {
