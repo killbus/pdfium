@@ -6,11 +6,11 @@
 
 #include <stdint.h>
 
-#include <map>
 #include <queue>
 #include <set>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
-#include <vector>
 
 #include "core/fpdfapi/parser/cpdf_array.h"
 #include "core/fpdfapi/parser/cpdf_dictionary.h"
@@ -44,20 +44,7 @@ class ObjectTreeTraverser {
   }
   ~ObjectTreeTraverser() = default;
 
-  void Traverse() { CalculateReferenceCounts(GetReferenceEntries()); }
-
-  const std::map<uint32_t, int>& referenced_objects() {
-    return referenced_objects_;
-  }
-
- private:
-  struct ReferenceEntry {
-    uint32_t ref_object_number;
-    uint32_t referenced_object_number;
-  };
-
-  std::vector<ReferenceEntry> GetReferenceEntries() {
-    std::vector<ReferenceEntry> reference_entries;
+  void Traverse() {
     while (!object_queue_.empty()) {
       RetainPtr<const CPDF_Object> current_object = object_queue_.front();
       object_queue_.pop();
@@ -94,8 +81,7 @@ class ObjectTreeTraverser {
           // Unlike the other object types, CPDF_Reference can point at nullptr.
           if (referenced_object) {
             CHECK(referenced_object_number);
-            reference_entries.push_back(
-                {ref_object_number, referenced_object_number});
+            RecordReference(ref_object_number, referenced_object_number);
             PushNewObject(ref_object, referenced_object);
           }
           break;
@@ -115,31 +101,29 @@ class ObjectTreeTraverser {
         }
       }
     }
-    return reference_entries;
   }
 
-  void CalculateReferenceCounts(
-      const std::vector<ReferenceEntry>& reference_entries) {
-    // Tracks PDF objects that referenced other PDF objects, identified by their
-    // object numbers. Never 0.
-    std::set<uint32_t> seen_ref_objects;
+  const std::unordered_map<uint32_t, int>& referenced_objects() {
+    return referenced_objects_;
+  }
 
-    for (const ReferenceEntry& entry : reference_entries) {
-      // Make sure this is not a self-reference.
-      if (entry.referenced_object_number == entry.ref_object_number) {
-        continue;
-      }
+ private:
+  void RecordReference(uint32_t ref_object_number,
+                       uint32_t referenced_object_number) {
+    // Make sure this is not a self-reference.
+    if (referenced_object_number == ref_object_number) {
+      return;
+    }
 
-      // Make sure this is not a circular reference.
-      if (pdfium::Contains(seen_ref_objects, entry.ref_object_number) &&
-          pdfium::Contains(seen_ref_objects, entry.referenced_object_number)) {
-        continue;
-      }
+    // Make sure this is not a circular reference.
+    if (pdfium::Contains(seen_ref_objects_, ref_object_number) &&
+        pdfium::Contains(seen_ref_objects_, referenced_object_number)) {
+      return;
+    }
 
-      ++referenced_objects_[entry.referenced_object_number];
-      if (entry.ref_object_number) {
-        seen_ref_objects.insert(entry.ref_object_number);
-      }
+    ++referenced_objects_[referenced_object_number];
+    if (ref_object_number) {
+      seen_ref_objects_.insert(ref_object_number);
     }
   }
 
@@ -158,7 +142,10 @@ class ObjectTreeTraverser {
       // This search can fail for inlined trailers.
       auto it = object_number_map_.find(parent_object);
       if (it != object_number_map_.end()) {
-        object_number_map_[child_object] = it->second;
+        // Copy before inserting, since an unordered-map rehash can invalidate
+        // `it`.
+        const uint32_t parent_object_number = it->second;
+        object_number_map_[child_object] = parent_object_number;
       }
     }
     object_queue_.push(std::move(child_object));
@@ -182,16 +169,20 @@ class ObjectTreeTraverser {
   // values are never 0.
   // This is used to prevent self-references, as a single PDF object, with
   // inlined objects, is represented by multiple CPDF_Objects.
-  std::map<const CPDF_Object*, uint32_t> object_number_map_;
+  std::unordered_map<const CPDF_Object*, uint32_t> object_number_map_;
 
   // Tracks traversed objects to prevent duplicates from getting into
   // `object_queue_` and `object_number_map_`.
-  std::set<const CPDF_Object*> seen_objects_;
+  std::unordered_set<const CPDF_Object*> seen_objects_;
+
+  // Tracks PDF objects that have already acted as reference owners. This is
+  // used to preserve the existing cycle suppression rule in encounter order.
+  std::unordered_set<uint32_t> seen_ref_objects_;
 
   // Tracks which PDF objects are referenced.
   // Key: object number
   // Value: number of times referenced
-  std::map<uint32_t, int> referenced_objects_;
+  std::unordered_map<uint32_t, int> referenced_objects_;
 };
 
 }  // namespace

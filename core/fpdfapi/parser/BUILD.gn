@@ -134,6 +134,7 @@ pdfium_unittest_source_set("unittests") {
     "cpdf_syntax_parser_unittest.cpp",
     "fpdf_parser_decode_unittest.cpp",
     "fpdf_parser_utility_unittest.cpp",
+    "object_tree_traversal_util_unittest.cpp",
   ]
   deps = [
     ":parser",
