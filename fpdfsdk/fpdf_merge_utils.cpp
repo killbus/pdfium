@@ -412,13 +412,21 @@ void RemapPageLinksOnPage(CPDF_Document* dest_doc,
         if (dest_array && dest_array->size() > 0) {
             // Check first element - optimize to single lookup
             RetainPtr<CPDF_Object> pFirst = dest_array->GetMutableDirectObjectAt(0);
+            if (!pFirst) continue;
             if (pFirst->IsNumber()) {
                 // It is a 0-based page index. This definitely needs fixing!
                 int old_page_idx = pFirst->GetInteger();
                 auto it = page_map.find(old_page_idx);
                 if (it != page_map.end()) {
-                    // Now perform actual modification on mutable dest_array
-                    dest_array->SetAt(0, pdfium::MakeRetain<CPDF_Number>(it->second));
+                    RetainPtr<const CPDF_Dictionary> dest_page =
+                        dest_doc->GetPageDictionary(it->second);
+                    if (dest_page) {
+                        // Convert numeric destinations to page references so they
+                        // keep targeting the same page after FPDF_MovePages().
+                        dest_array->SetAt(
+                            0, pdfium::MakeRetain<CPDF_Reference>(
+                                   dest_doc, dest_page->GetObjNum()));
+                    }
                 }
             } else if (pFirst->IsReference()) {
                 // It is a reference to a Page Dictionary.

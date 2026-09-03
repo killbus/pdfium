@@ -29,6 +29,7 @@ readonly EXPECTED_TESTS=(
   FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsPageTreeMutation
   FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsDuplicatePageDictionaryIdentity
   FPDFEditPageEmbedderTest.ReusableFormByIndexRejectsSameCountPageReplacement
+  FPDFPPOEmbedderTest.SequentialCompactImportsPreserveMetadataAfterFullMove
 )
 readonly FOCUSED_TEST_FILTER=$(IFS=:; printf '%s' "${EXPECTED_TESTS[*]}")
 
@@ -48,6 +49,7 @@ readonly OUT=${NATIVE_OUT:-$SRC/out/native-reusable-xobject-preflight}
 readonly GCLIENT_FILE=$CLIENT_ROOT/.gclient
 readonly TEST_SOURCES=(
   "$SRC/fpdfsdk/fpdf_editpage_embeddertest.cpp"
+  "$SRC/fpdfsdk/fpdf_ppo_embeddertest.cpp"
   "$SRC/fpdfsdk/fpdf_view_embeddertest.cpp"
 )
 readonly GN_ARGS='is_debug=false is_component_build=false pdf_is_standalone=true pdf_enable_v8=false pdf_enable_xfa=false pdf_use_skia=false pdf_enable_fontations=false pdf_use_partition_alloc=false clang_use_chrome_plugins=false treat_warnings_as_errors=false use_remoteexec=false symbol_level=0'

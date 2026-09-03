@@ -6,6 +6,7 @@
 #include <iterator>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "core/fpdfapi/page/cpdf_form.h"
@@ -15,8 +16,10 @@
 #include "core/fpdfapi/parser/cpdf_document.h"
 #include "core/fpdfapi/parser/cpdf_name.h"
 #include "core/fpdfapi/parser/cpdf_number.h"
+#include "core/fpdfapi/parser/cpdf_reference.h"
 #include "core/fpdfapi/parser/cpdf_stream.h"
 #include "core/fpdfapi/parser/cpdf_string.h"
+#include "core/fpdfdoc/cpdf_dest.h"
 #include "core/fxge/cfx_defaultrenderdevice.h"
 #include "fpdfsdk/cpdfsdk_helpers.h"
 #include "public/cpp/fpdf_scopers.h"
@@ -68,6 +71,144 @@ const char* Bug750568PageHash(int page_index) {
       {"64ad08132a1c5a166768298c8a578f57", "83b83e2f6bc80707d0a917c7634140b9",
        "913cd3723a451e4e46fbc2c05702d1ee", "81fb7cfd4860f855eb468f73dfeb6d60"}};
   return kChecksums[page_index];
+}
+
+RetainPtr<CPDF_Array> CreatePageDestination(CPDF_Document* document,
+                                            int page_index,
+                                            bool use_page_reference) {
+  auto destination = pdfium::MakeRetain<CPDF_Array>();
+  if (use_page_reference) {
+    RetainPtr<const CPDF_Dictionary> page =
+        document->GetPageDictionary(page_index);
+    if (!page) {
+      return nullptr;
+    }
+    destination->AppendNew<CPDF_Reference>(document, page->GetObjNum());
+  } else {
+    destination->AppendNew<CPDF_Number>(page_index);
+  }
+  destination->AppendNew<CPDF_Name>("Fit");
+  return destination;
+}
+
+void AddLink(CPDF_Document* document,
+             int source_page_index,
+             int target_page_index,
+             bool use_action,
+             bool use_page_reference) {
+  RetainPtr<CPDF_Dictionary> source_page =
+      document->GetMutablePageDictionary(source_page_index);
+  RetainPtr<CPDF_Array> annots = source_page->GetMutableArrayFor("Annots");
+  if (!annots) {
+    annots = source_page->SetNewFor<CPDF_Array>("Annots");
+  }
+
+  RetainPtr<CPDF_Dictionary> annotation =
+      document->NewIndirect<CPDF_Dictionary>();
+  annotation->SetNewFor<CPDF_Name>("Type", "Annot");
+  annotation->SetNewFor<CPDF_Name>("Subtype", "Link");
+  RetainPtr<CPDF_Array> destination = CreatePageDestination(
+      document, target_page_index, use_page_reference);
+  if (use_action) {
+    RetainPtr<CPDF_Dictionary> action =
+        annotation->SetNewFor<CPDF_Dictionary>("A");
+    action->SetNewFor<CPDF_Name>("S", "GoTo");
+    action->SetFor("D", std::move(destination));
+  } else {
+    annotation->SetFor("Dest", std::move(destination));
+  }
+  annots->AppendNew<CPDF_Reference>(document, annotation->GetObjNum());
+}
+
+void AddBookmarks(CPDF_Document* document) {
+  RetainPtr<CPDF_Dictionary> outlines =
+      document->NewIndirect<CPDF_Dictionary>();
+  outlines->SetNewFor<CPDF_Name>("Type", "Outlines");
+  outlines->SetNewFor<CPDF_Number>("Count", 2);
+  document->GetMutableRoot()->SetNewFor<CPDF_Reference>(
+      "Outlines", document, outlines->GetObjNum());
+
+  RetainPtr<CPDF_Dictionary> direct =
+      document->NewIndirect<CPDF_Dictionary>();
+  direct->SetNewFor<CPDF_String>("Title", L"Direct destination");
+  direct->SetNewFor<CPDF_Reference>("Parent", document,
+                                    outlines->GetObjNum());
+  direct->SetFor("Dest", CreatePageDestination(document, 1, true));
+
+  RetainPtr<CPDF_Dictionary> action =
+      document->NewIndirect<CPDF_Dictionary>();
+  action->SetNewFor<CPDF_String>("Title", L"GoTo destination");
+  action->SetNewFor<CPDF_Reference>("Parent", document,
+                                    outlines->GetObjNum());
+  RetainPtr<CPDF_Dictionary> action_dictionary =
+      action->SetNewFor<CPDF_Dictionary>("A");
+  action_dictionary->SetNewFor<CPDF_Name>("S", "GoTo");
+  action_dictionary->SetFor("D", CreatePageDestination(document, 2, true));
+
+  direct->SetNewFor<CPDF_Reference>("Next", document, action->GetObjNum());
+  action->SetNewFor<CPDF_Reference>("Prev", document, direct->GetObjNum());
+  outlines->SetNewFor<CPDF_Reference>("First", document,
+                                      direct->GetObjNum());
+  outlines->SetNewFor<CPDF_Reference>("Last", document,
+                                      action->GetObjNum());
+}
+
+ScopedFPDFDocument CreateCompactMetadataDocument() {
+  ScopedFPDFDocument document(FPDF_CreateNewDocument());
+  if (!document) {
+    return nullptr;
+  }
+
+  for (int page_index = 0; page_index < 3; ++page_index) {
+    ScopedFPDFPage page(FPDFPage_New(document.get(), page_index, 100, 100));
+    if (!page) {
+      return nullptr;
+    }
+  }
+
+  CPDF_Document* pdf_document =
+      CPDFDocumentFromFPDFDocument(document.get());
+  AddLink(pdf_document, 0, 2, false, false);
+  AddLink(pdf_document, 1, 0, false, true);
+  AddLink(pdf_document, 2, 1, true, false);
+  AddBookmarks(pdf_document);
+  return document;
+}
+
+RetainPtr<const CPDF_Array> GetLinkDestination(CPDF_Document* document,
+                                               int page_index,
+                                               bool use_action) {
+  RetainPtr<const CPDF_Dictionary> page =
+      document->GetPageDictionary(page_index);
+  if (!page) {
+    return nullptr;
+  }
+  RetainPtr<const CPDF_Array> annots = page->GetArrayFor("Annots");
+  if (!annots || annots->size() != 1) {
+    return nullptr;
+  }
+  RetainPtr<const CPDF_Dictionary> annotation = annots->GetDictAt(0);
+  if (!annotation) {
+    return nullptr;
+  }
+  if (!use_action) {
+    return annotation->GetArrayFor("Dest");
+  }
+  RetainPtr<const CPDF_Dictionary> action = annotation->GetDictFor("A");
+  return action ? action->GetArrayFor("D") : nullptr;
+}
+
+void ExpectDestinationPage(CPDF_Document* document,
+                           const CPDF_Array* destination,
+                           int expected_page_index) {
+  ASSERT_TRUE(destination);
+  ASSERT_GT(destination->size(), 0u);
+  RetainPtr<const CPDF_Object> first_object = destination->GetObjectAt(0);
+  ASSERT_TRUE(first_object);
+  EXPECT_TRUE(first_object->IsReference());
+  EXPECT_EQ(expected_page_index,
+            CPDF_Dest(pdfium::WrapRetain(destination))
+                .GetDestPageIndex(document));
 }
 
 }  // namespace
@@ -698,4 +839,139 @@ TEST_F(FPDFPPOEmbedderTest, ImportIntoDocWithWrongPageType) {
     CompareBitmap(bitmap.get(), 200, 100, new_page_2_checksum);
     CloseSavedPage(page);
   }
+}
+
+
+TEST_F(FPDFPPOEmbedderTest,
+       SequentialCompactImportsPreserveMetadataAfterFullMove) {
+  ScopedFPDFDocument destination(FPDF_CreateNewDocument());
+  ASSERT_TRUE(destination);
+
+  auto verify_source_metadata = [](FPDF_DOCUMENT source) {
+    CPDF_Document* source_document =
+        CPDFDocumentFromFPDFDocument(source);
+    ASSERT_TRUE(source_document);
+
+    RetainPtr<const CPDF_Array> direct_numeric =
+        GetLinkDestination(source_document, 0, false);
+    ASSERT_TRUE(direct_numeric);
+    ASSERT_TRUE(direct_numeric->GetObjectAt(0));
+    EXPECT_TRUE(direct_numeric->GetObjectAt(0)->IsNumber());
+
+    RetainPtr<const CPDF_Array> direct_reference =
+        GetLinkDestination(source_document, 1, false);
+    ASSERT_TRUE(direct_reference);
+    ASSERT_TRUE(direct_reference->GetObjectAt(0));
+    EXPECT_TRUE(direct_reference->GetObjectAt(0)->IsReference());
+
+    RetainPtr<const CPDF_Array> goto_numeric =
+        GetLinkDestination(source_document, 2, true);
+    ASSERT_TRUE(goto_numeric);
+    ASSERT_TRUE(goto_numeric->GetObjectAt(0));
+    EXPECT_TRUE(goto_numeric->GetObjectAt(0)->IsNumber());
+
+    RetainPtr<const CPDF_Dictionary> outlines =
+        source_document->GetRoot()->GetDictFor("Outlines");
+    ASSERT_TRUE(outlines);
+    RetainPtr<const CPDF_Dictionary> direct_bookmark =
+        outlines->GetDictFor("First");
+    ASSERT_TRUE(direct_bookmark);
+    EXPECT_TRUE(direct_bookmark->GetArrayFor("Dest"));
+    EXPECT_FALSE(direct_bookmark->KeyExist("A"));
+    RetainPtr<const CPDF_Dictionary> goto_bookmark =
+        direct_bookmark->GetDictFor("Next");
+    ASSERT_TRUE(goto_bookmark);
+    EXPECT_FALSE(goto_bookmark->KeyExist("Dest"));
+    RetainPtr<const CPDF_Dictionary> action =
+        goto_bookmark->GetDictFor("A");
+    ASSERT_TRUE(action);
+    EXPECT_EQ("GoTo", action->GetByteStringFor("S"));
+    EXPECT_TRUE(action->GetArrayFor("D"));
+  };
+
+  {
+    ScopedFPDFDocument source = CreateCompactMetadataDocument();
+    ASSERT_TRUE(source);
+    verify_source_metadata(source.get());
+    FPDF_PAGEIMPORT session =
+        FPDF_PageImport_Begin(destination.get(), nullptr);
+    ASSERT_TRUE(session);
+    EXPECT_TRUE(FPDF_PageImport_ImportPages(session, source.get(), "1-3", 0));
+    EXPECT_TRUE(FPDF_CopyBookmarks(destination.get(), source.get(), "1-3", 0));
+    EXPECT_TRUE(FPDF_RemapPageLinks(destination.get(), source.get(), "1-3", 0));
+    FPDF_PageImport_End(session);
+    source.reset();
+  }
+
+  {
+    ScopedFPDFDocument source = CreateCompactMetadataDocument();
+    ASSERT_TRUE(source);
+    verify_source_metadata(source.get());
+    FPDF_PAGEIMPORT session =
+        FPDF_PageImport_Begin(destination.get(), nullptr);
+    ASSERT_TRUE(session);
+    EXPECT_TRUE(FPDF_PageImport_ImportPages(session, source.get(), "1-3", 3));
+    EXPECT_TRUE(FPDF_CopyBookmarks(destination.get(), source.get(), "1-3", 3));
+    EXPECT_TRUE(FPDF_RemapPageLinks(destination.get(), source.get(), "1-3", 3));
+    FPDF_PageImport_End(session);
+    source.reset();
+  }
+
+  ASSERT_EQ(6, FPDF_GetPageCount(destination.get()));
+  CPDF_Document* destination_document =
+      CPDFDocumentFromFPDFDocument(destination.get());
+  ASSERT_TRUE(destination_document);
+
+  std::array<uint32_t, 6> compact_page_object_numbers;
+  for (size_t i = 0; i < compact_page_object_numbers.size(); ++i) {
+    RetainPtr<const CPDF_Dictionary> page =
+        destination_document->GetPageDictionary(i);
+    ASSERT_TRUE(page);
+    compact_page_object_numbers[i] = page->GetObjNum();
+  }
+
+  static constexpr std::array<int, 6> kInterleavePermutation = {
+      0, 3, 1, 4, 2, 5};
+  ASSERT_TRUE(FPDF_MovePages(
+      destination.get(), kInterleavePermutation.data(),
+      static_cast<unsigned long>(kInterleavePermutation.size()), 0));
+
+  for (size_t i = 0; i < kInterleavePermutation.size(); ++i) {
+    RetainPtr<const CPDF_Dictionary> page =
+        destination_document->GetPageDictionary(i);
+    ASSERT_TRUE(page);
+    EXPECT_EQ(compact_page_object_numbers[kInterleavePermutation[i]],
+              page->GetObjNum());
+  }
+
+  static constexpr std::array<int, 6> kExpectedLinkTargets = {
+      4, 5, 0, 1, 2, 3};
+  static constexpr std::array<bool, 6> kLinkUsesAction = {
+      false, false, false, false, true, true};
+  for (size_t i = 0; i < kExpectedLinkTargets.size(); ++i) {
+    SCOPED_TRACE(i);
+    ExpectDestinationPage(
+        destination_document,
+        GetLinkDestination(destination_document, i, kLinkUsesAction[i]).Get(),
+        kExpectedLinkTargets[i]);
+  }
+
+  RetainPtr<const CPDF_Dictionary> outlines =
+      destination_document->GetRoot()->GetDictFor("Outlines");
+  ASSERT_TRUE(outlines);
+  RetainPtr<const CPDF_Dictionary> bookmark = outlines->GetDictFor("First");
+  static constexpr std::array<int, 4> kExpectedBookmarkTargets = {
+      2, 4, 3, 5};
+  for (size_t i = 0; i < kExpectedBookmarkTargets.size(); ++i) {
+    SCOPED_TRACE(i);
+    ASSERT_TRUE(bookmark);
+    // FPDF_CopyBookmarks() converts source GoTo bookmarks (the odd entries)
+    // to direct destinations in the destination document.
+    EXPECT_FALSE(bookmark->KeyExist("A"));
+    ExpectDestinationPage(destination_document,
+                          bookmark->GetArrayFor("Dest").Get(),
+                          kExpectedBookmarkTargets[i]);
+    bookmark = bookmark->GetDictFor("Next");
+  }
+  EXPECT_FALSE(bookmark);
 }
